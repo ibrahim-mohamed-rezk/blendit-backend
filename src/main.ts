@@ -55,6 +55,7 @@ async function bootstrap() {
     .addTag('Loyalty', 'Customer loyalty points')
     .addTag('Inventory', 'Inventory & stock management')
     .addTag('Activity Logs', 'System activity audit log')
+    .addTag('Settings', 'Store and loyalty settings')
     .addTag('Analytics', 'Sales & performance analytics')
     .build();
 

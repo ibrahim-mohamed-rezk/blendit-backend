@@ -1,6 +1,7 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateOrderDto } from './dto/create-order.dto';
+import { UpdateOrderDto } from './dto/update-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { OrderStatus, PaymentMethod } from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -187,14 +188,68 @@ export class OrdersService {
     return order;
   }
 
-  async updateStatus(id: number, dto: UpdateOrderStatusDto) {
+  async updateStatus(id: number, dto: UpdateOrderStatusDto, user?: { role?: { name: string } }) {
     const order = await this.findOne(id);
+    const cashierEditableStatuses = [OrderStatus.PENDING, OrderStatus.PREPARING, OrderStatus.READY];
+    if (user?.role?.name === 'CASHIER' && !cashierEditableStatuses.includes(order.status)) {
+      throw new ForbiddenException('Cashier can only update status of pending, preparing, or ready orders');
+    }
     const updated = await this.prisma.order.update({
       where: { id },
       data: { status: dto.status },
       include: { items: { include: { product: true } }, customer: true },
     });
     this.eventEmitter.emit('order.statusUpdated', updated);
+    return updated;
+  }
+
+  async update(id: number, dto: UpdateOrderDto, user: { role?: { name: string } }) {
+    const order = await this.findOne(id);
+    const cashierEditableStatuses = [OrderStatus.PENDING, OrderStatus.PREPARING, OrderStatus.READY];
+    if (user?.role?.name === 'CASHIER' && !cashierEditableStatuses.includes(order.status)) {
+      throw new ForbiddenException('Cashier can only update pending, preparing, or ready orders');
+    }
+    if (!dto.items?.length) throw new BadRequestException('Order must have at least one item');
+
+    let subtotal = 0;
+    const itemsData: any[] = [];
+    for (const item of dto.items) {
+      const product = await this.prisma.product.findUnique({ where: { id: item.product_id } });
+      if (!product) throw new NotFoundException(`Product #${item.product_id} not found`);
+      if (!product.is_available) throw new BadRequestException(`Product "${product.name}" is not available`);
+      const lineTotal = product.price * item.quantity;
+      subtotal += lineTotal;
+      itemsData.push({
+        product_id: item.product_id,
+        quantity: item.quantity,
+        price: product.price,
+        notes: item.notes,
+        customizations: item.customizations || {},
+      });
+    }
+
+    const discount = dto.discount ?? order.discount;
+    const discountedSubtotal = Math.max(subtotal - discount, 0);
+    const tax = discountedSubtotal * TAX_RATE;
+    const total = discountedSubtotal + tax;
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.orderItem.deleteMany({ where: { order_id: id } });
+      return tx.order.update({
+        where: { id },
+        data: {
+          customer_id: dto.customer_id !== undefined ? dto.customer_id : order.customer_id,
+          discount,
+          subtotal,
+          tax,
+          total,
+          items: { create: itemsData },
+        },
+        include: { items: { include: { product: true } }, customer: true },
+      });
+    });
+
+    this.eventEmitter.emit('order.updated', updated);
     return updated;
   }
 }

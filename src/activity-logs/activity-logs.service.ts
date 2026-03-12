@@ -25,7 +25,7 @@ export class ActivityLogsService {
     const [data, total] = await this.prisma.$transaction([
       this.prisma.activityLog.findMany({
         where, skip, take: limit,
-        include: { user: { select: { id: true, name: true, email: true } } },
+        include: { user: { select: { id: true, name: true, email: true, role: { select: { name: true } } } } },
         orderBy: { created_at: 'desc' },
       }),
       this.prisma.activityLog.count({ where }),

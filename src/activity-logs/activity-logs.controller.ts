@@ -18,9 +18,10 @@ export class ActivityLogsController {
   @ApiOperation({ summary: 'Get activity logs (paginated)' })
   findAll(
     @Query() pagination: PaginationDto,
-    @Query('userId') userId?: number,
+    @Query('userId') userId?: string,
     @Query('action') action?: string,
   ) {
-    return this.activityLogsService.findAll(pagination.page, pagination.limit, userId ? +userId : undefined, action);
+    const uid = userId != null && userId !== '' ? parseInt(userId, 10) : undefined;
+    return this.activityLogsService.findAll(pagination.page, pagination.limit, Number.isNaN(uid) ? undefined : uid, action);
   }
 }

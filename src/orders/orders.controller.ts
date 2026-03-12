@@ -2,6 +2,7 @@ import { Body, Controller, Get, Param, ParseIntPipe, Post, Put, Query, UseGuards
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { OrdersService } from './orders.service';
 import { CreateOrderDto } from './dto/create-order.dto';
+import { UpdateOrderDto } from './dto/update-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -43,7 +44,21 @@ export class OrdersController {
 
   @Put(':id/status')
   @ApiOperation({ summary: 'Update order status' })
-  updateStatus(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateOrderStatusDto) {
-    return this.ordersService.updateStatus(id, dto);
+  updateStatus(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateOrderStatusDto,
+    @CurrentUser() user: { role?: { name: string } },
+  ) {
+    return this.ordersService.updateStatus(id, dto, user);
+  }
+
+  @Put(':id')
+  @ApiOperation({ summary: 'Update order (items, customer, discount). Admin: any; Cashier: pending only.' })
+  update(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateOrderDto,
+    @CurrentUser() user: { role?: { name: string } },
+  ) {
+    return this.ordersService.update(id, dto, user);
   }
 }

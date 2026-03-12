@@ -27,6 +27,7 @@ model User {
   password_hash String
   role_id       Int
   is_active     Boolean  @default(true)
+  page_access   Json?    // ["/admin/orders", "/admin/products", ...] - for ADMIN role
   created_at    DateTime @default(now())
   updated_at    DateTime @updatedAt
 
@@ -34,6 +35,7 @@ model User {
   orders       Order[]
   transactions Transaction[]
   activityLogs ActivityLog[]
+  heldOrders   HeldOrder[]
 
   @@map("users")
 }
@@ -49,6 +51,7 @@ model Customer {
   deliveryOrders  DeliveryOrder[]
   loyaltyAccount  LoyaltyAccount?
   loyaltyHistory  LoyaltyTransaction[]
+  heldOrders      HeldOrder[]
 
   @@map("customers")
 }
@@ -97,6 +100,8 @@ enum OrderType {
 
 enum OrderStatus {
   PENDING
+  PREPARING
+  READY
   COMPLETED
   CANCELLED
 }
@@ -265,6 +270,69 @@ model StockTransaction {
   item InventoryItem @relation(fields: [inventory_item_id], references: [id])
 
   @@map("stock_transactions")
+}
+
+// -----------------------------------------------------------------------------
+// HELD ORDERS (draft orders saved without payment)
+// -----------------------------------------------------------------------------
+
+model HeldOrder {
+  id           Int      @id @default(autoincrement())
+  cashier_id   Int
+  order_type   String   // DINE_IN, TAKEAWAY, DELIVERY
+  table_number String?  // for dine-in
+  customer_id  Int?
+  notes        String?
+  items        Json     // [{ product_id, productName, quantity, unitPrice, totalPrice, notes?, customizations? }]
+  subtotal     Float
+  tax          Float
+  discount     Float    @default(0)
+  total        Float
+  created_at   DateTime @default(now())
+
+  cashier User     @relation(fields: [cashier_id], references: [id])
+  customer Customer? @relation(fields: [customer_id], references: [id])
+
+  @@map("held_orders")
+}
+
+// -----------------------------------------------------------------------------
+// PROMOTIONS
+// -----------------------------------------------------------------------------
+
+enum DiscountType {
+  PERCENTAGE
+  FIXED
+}
+
+model Promotion {
+  id              Int          @id @default(autoincrement())
+  code            String       @unique
+  description     String?
+  discount_type   DiscountType
+  discount_value  Float
+  min_order_amount Float?
+  max_uses        Int?
+  used_count      Int          @default(0)
+  valid_from      DateTime?
+  valid_until     DateTime?
+  is_active       Boolean      @default(true)
+  created_at      DateTime     @default(now())
+  updated_at      DateTime     @updatedAt
+
+  @@map("promotions")
+}
+
+// -----------------------------------------------------------------------------
+// SETTINGS (store info, loyalty config - single row per key)
+// -----------------------------------------------------------------------------
+
+model Setting {
+  key   String @id  // e.g. "store", "loyalty"
+  value Json
+  updated_at DateTime @updatedAt
+
+  @@map("settings")
 }
 
 // -----------------------------------------------------------------------------

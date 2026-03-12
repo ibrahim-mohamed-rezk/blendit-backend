@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { UpdateDeliveryStatusDto, CreateDeliveryOrderDto } from './dto/delivery.dto';
+import { UpdateDeliveryStatusDto, CreateDeliveryOrderDto, UpdateDeliveryOrderDto } from './dto/delivery.dto';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
 @Injectable()
@@ -57,6 +57,20 @@ export class DeliveryService {
       include: { order: true, customer: true },
     });
     this.eventEmitter.emit('delivery.statusUpdated', updated);
+    return updated;
+  }
+
+  async update(id: number, dto: UpdateDeliveryOrderDto) {
+    await this.findOne(id);
+    const data: { address?: string; notes?: string } = {};
+    if (dto.address !== undefined) data.address = dto.address;
+    if (dto.notes !== undefined) data.notes = dto.notes;
+    const updated = await this.prisma.deliveryOrder.update({
+      where: { id },
+      data,
+      include: { order: { include: { items: { include: { product: true } } } }, customer: true },
+    });
+    this.eventEmitter.emit('delivery.updated', updated);
     return updated;
   }
 }

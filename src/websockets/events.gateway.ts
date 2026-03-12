@@ -32,12 +32,38 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.logger.log(`Client disconnected: ${client.id}`);
   }
 
-  /** Join a room (pos, kitchen, delivery, customer-display) */
+  /** Join a room (pos, kitchen, delivery, customer-display, customer-table-X) */
   @SubscribeMessage('join_room')
   handleJoinRoom(@MessageBody() room: string, @ConnectedSocket() client: Socket) {
     client.join(room);
     this.logger.log(`Client ${client.id} joined room: ${room}`);
     return { event: 'joined', data: room };
+  }
+
+  /** Live cart update from POS - syncs all cashier changes (dine-in, takeaway, delivery) to customer display */
+  @SubscribeMessage('cart_update')
+  handleCartUpdate(
+    @MessageBody()
+    payload: {
+      table?: string;
+      items: Array<{
+        productName: string;
+        quantity: number;
+        unitPrice: number;
+        totalPrice: number;
+        modificationsSummary?: string;
+        notes?: string;
+      }>;
+      subtotal: number;
+      tax: number;
+      discount: number;
+      total: number;
+      customerName?: string;
+      orderType?: string;
+    },
+    @ConnectedSocket() client: Socket,
+  ) {
+    this.server.to('customer-display').emit('live_cart', payload);
   }
 
   // ── Listeners on internal events (from OrdersService / DeliveryService) ──

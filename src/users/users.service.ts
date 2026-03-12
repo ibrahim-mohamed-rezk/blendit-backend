@@ -12,15 +12,22 @@ export class UsersService {
     const exists = await this.prisma.user.findUnique({ where: { email: dto.email } });
     if (exists) throw new BadRequestException('Email already in use');
 
+    const role = await this.prisma.role.findUnique({ where: { id: Number(dto.role_id) } });
+    if (!role) throw new BadRequestException(`Role #${dto.role_id} not found. Run: npx prisma db seed`);
+
     const password_hash = await bcrypt.hash(dto.password, 10);
+    const data: Record<string, unknown> = {
+      name: dto.name,
+      email: dto.email,
+      phone: dto.phone ?? null,
+      password_hash,
+      role_id: Number(dto.role_id),
+    };
+    if (dto.page_access != null && Array.isArray(dto.page_access) && dto.page_access.length > 0) {
+      data.page_access = dto.page_access;
+    }
     const user = await this.prisma.user.create({
-      data: {
-        name: dto.name,
-        email: dto.email,
-        phone: dto.phone,
-        password_hash,
-        role_id: dto.role_id,
-      },
+      data: data as Parameters<typeof this.prisma.user.create>[0]['data'],
       include: { role: true },
     });
     const { password_hash: _, ...result } = user;
@@ -57,6 +64,9 @@ export class UsersService {
     if (dto.password) {
       data.password_hash = await bcrypt.hash(dto.password, 10);
       delete data.password;
+    }
+    if ('page_access' in dto) {
+      data.page_access = dto.page_access ?? null;
     }
     const user = await this.prisma.user.update({
       where: { id },

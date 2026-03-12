@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { CreateCategoryDto } from './dto/create-category.dto';
+import { UpdateCategoryDto } from './dto/update-category.dto';
 
 @Injectable()
 export class ProductsService {
@@ -19,7 +20,23 @@ export class ProductsService {
     return this.prisma.category.findMany({ orderBy: { name: 'asc' } });
   }
 
+  async findOneCategory(id: number) {
+    const cat = await this.prisma.category.findUnique({ where: { id } });
+    if (!cat) throw new NotFoundException(`Category #${id} not found`);
+    return cat;
+  }
+
+  async updateCategory(id: number, dto: UpdateCategoryDto) {
+    await this.findOneCategory(id);
+    const exists = await this.prisma.category.findFirst({
+      where: { name: dto.name, NOT: { id } },
+    });
+    if (exists) throw new BadRequestException('Category with this name already exists');
+    return this.prisma.category.update({ where: { id }, data: { name: dto.name } });
+  }
+
   async removeCategory(id: number) {
+    await this.findOneCategory(id);
     await this.prisma.category.delete({ where: { id } });
     return { message: `Category #${id} deleted` };
   }
@@ -75,6 +92,12 @@ export class ProductsService {
 
   async remove(id: number) {
     await this.findOne(id);
+    const usedInOrders = await this.prisma.orderItem.count({ where: { product_id: id } });
+    if (usedInOrders > 0) {
+      throw new BadRequestException(
+        `Cannot delete product: it is used in ${usedInOrders} order item(s). Remove or complete those orders first.`,
+      );
+    }
     await this.prisma.product.delete({ where: { id } });
     return { message: `Product #${id} deleted` };
   }

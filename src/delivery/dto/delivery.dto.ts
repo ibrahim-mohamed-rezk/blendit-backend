@@ -27,3 +27,15 @@ export class CreateDeliveryOrderDto {
   @IsString()
   notes?: string;
 }
+
+export class UpdateDeliveryOrderDto {
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  address?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  notes?: string;
+}

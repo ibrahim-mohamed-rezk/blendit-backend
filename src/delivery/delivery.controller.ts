@@ -1,8 +1,10 @@
 import { Body, Controller, Get, Param, ParseIntPipe, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { DeliveryService } from './delivery.service';
-import { UpdateDeliveryStatusDto, CreateDeliveryOrderDto } from './dto/delivery.dto';
+import { UpdateDeliveryStatusDto, CreateDeliveryOrderDto, UpdateDeliveryOrderDto } from './dto/delivery.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { RolesGuard } from '../common/guards/roles.guard';
+import { Roles } from '../common/decorators/roles.decorator';
 import { PaginationDto } from '../common/dto/pagination.dto';
 
 @ApiTags('Delivery')
@@ -35,5 +37,13 @@ export class DeliveryController {
   @ApiOperation({ summary: 'Update delivery order status' })
   updateStatus(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateDeliveryStatusDto) {
     return this.deliveryService.updateStatus(id, dto);
+  }
+
+  @Put(':id')
+  @UseGuards(RolesGuard)
+  @Roles('SUPER_ADMIN', 'ADMIN')
+  @ApiOperation({ summary: 'Update delivery order (address, notes) - Admin only' })
+  update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateDeliveryOrderDto) {
+    return this.deliveryService.update(id, dto);
   }
 }
