@@ -26,16 +26,19 @@ export class ProductsService {
 
   // Products
   async create(dto: CreateProductDto) {
+    const data = {
+      name: dto.name,
+      description: dto.description,
+      price: dto.price,
+      category_id: dto.category_id,
+      ingredients: dto.ingredients || [],
+      image_url: dto.image_url,
+      is_available: dto.is_available ?? true,
+      is_popular: dto.is_popular ?? false,
+      is_new: dto.is_new ?? false,
+    };
     return this.prisma.product.create({
-      data: {
-        name: dto.name,
-        description: dto.description,
-        price: dto.price,
-        category_id: dto.category_id,
-        ingredients: dto.ingredients || [],
-        image_url: dto.image_url,
-        is_available: dto.is_available ?? true,
-      },
+      data: data as Parameters<typeof this.prisma.product.create>[0]['data'],
       include: { category: true },
     });
   }
