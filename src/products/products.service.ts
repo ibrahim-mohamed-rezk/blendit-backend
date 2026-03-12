@@ -25,7 +25,7 @@ export class ProductsService {
   }
 
   // Products
-  async create(dto: CreateProductDto) {
+  async create(dto: CreateProductDto) { 
     const data = {
       name: dto.name,
       description: dto.description,
@@ -43,11 +43,17 @@ export class ProductsService {
     });
   }
 
-  async findAll(page = 1, limit = 10, categoryId?: number, available?: boolean) {
+  async findAll(page = 1, limit = 10, categoryId?: number, available?: boolean, search?: string) {
     const skip = (page - 1) * limit;
-    const where: any = {};
+    const where: Record<string, unknown> = {};
     if (categoryId) where.category_id = categoryId;
     if (available !== undefined) where.is_available = available;
+    if (search?.trim()) {
+      where.OR = [
+        { name: { contains: search.trim(), mode: 'insensitive' } },
+        { description: { contains: search.trim(), mode: 'insensitive' } },
+      ];
+    }
 
     const [data, total] = await this.prisma.$transaction([
       this.prisma.product.findMany({ where, skip, take: limit, include: { category: true }, orderBy: { created_at: 'desc' } }),

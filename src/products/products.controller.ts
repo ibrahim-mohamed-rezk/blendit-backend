@@ -1,13 +1,13 @@
 import { Body, Controller, Delete, Get, Param, ParseIntPipe, Post, Put, Query, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ProductsService } from './products.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { CreateCategoryDto } from './dto/create-category.dto';
+import { FindAllProductsQueryDto } from './dto/find-all-products-query.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
-import { PaginationDto } from '../common/dto/pagination.dto';
 
 @ApiTags('Products')
 @ApiBearerAuth()
@@ -50,15 +50,14 @@ export class ProductsController {
 
   @Get('products')
   @ApiOperation({ summary: 'Get all products (paginated)' })
-  @ApiQuery({ name: 'categoryId', required: false, type: Number })
-  @ApiQuery({ name: 'available', required: false, type: Boolean })
-  findAll(
-    @Query() pagination: PaginationDto,
-    @Query('categoryId') categoryId?: number,
-    @Query('available') available?: string,
-  ) {
-    const avail = available !== undefined ? available === 'true' : undefined;
-    return this.productsService.findAll(pagination.page, pagination.limit, categoryId ? +categoryId : undefined, avail);
+  findAll(@Query() query: FindAllProductsQueryDto) {
+    return this.productsService.findAll(
+      query.page ?? 1,
+      query.limit ?? 10,
+      query.categoryId,
+      query.available,
+      query.search,
+    );
   }
 
   @Get('products/:id')
