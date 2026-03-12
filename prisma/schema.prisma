@@ -1,0 +1,284 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// -----------------------------------------------------------------------------
+// USER & ROLE MANAGEMENT
+// -----------------------------------------------------------------------------
+
+model Role {
+  id    Int    @id @default(autoincrement())
+  name  String @unique // SUPER_ADMIN, ADMIN, CASHIER
+  users User[]
+
+  @@map("roles")
+}
+
+model User {
+  id            Int      @id @default(autoincrement())
+  name          String
+  email         String   @unique
+  phone         String?
+  password_hash String
+  role_id       Int
+  is_active     Boolean  @default(true)
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  role         Role          @relation(fields: [role_id], references: [id])
+  orders       Order[]
+  transactions Transaction[]
+  activityLogs ActivityLog[]
+
+  @@map("users")
+}
+
+model Customer {
+  id         Int      @id @default(autoincrement())
+  name       String
+  phone      String   @unique
+  email      String?
+  created_at DateTime @default(now())
+
+  orders          Order[]
+  deliveryOrders  DeliveryOrder[]
+  loyaltyAccount  LoyaltyAccount?
+  loyaltyHistory  LoyaltyTransaction[]
+
+  @@map("customers")
+}
+
+// -----------------------------------------------------------------------------
+// PRODUCT MANAGEMENT
+// -----------------------------------------------------------------------------
+
+model Category {
+  id       Int       @id @default(autoincrement())
+  name     String    @unique
+  products Product[]
+
+  @@map("categories")
+}
+
+model Product {
+  id           Int      @id @default(autoincrement())
+  name         String
+  description  String?
+  price        Float
+  category_id  Int
+  ingredients  String[] // Array of ingredient names
+  image_url    String?
+  is_available Boolean  @default(true)
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  category   Category    @relation(fields: [category_id], references: [id])
+  orderItems OrderItem[]
+
+  @@map("products")
+}
+
+// -----------------------------------------------------------------------------
+// ORDER MANAGEMENT & POS
+// -----------------------------------------------------------------------------
+
+enum OrderType {
+  DINE_IN
+  TAKEAWAY
+  DELIVERY
+}
+
+enum OrderStatus {
+  PENDING
+  COMPLETED
+  CANCELLED
+}
+
+model Order {
+  id           Int         @id @default(autoincrement())
+  order_number String      @unique
+  customer_id  Int?
+  cashier_id   Int?
+  order_type   OrderType
+  status       OrderStatus @default(PENDING)
+  subtotal     Float
+  tax          Float
+  discount     Float       @default(0)
+  total        Float
+  created_at   DateTime    @default(now())
+  updated_at   DateTime    @updatedAt
+
+  customer       Customer?       @relation(fields: [customer_id], references: [id])
+  cashier        User?           @relation(fields: [cashier_id], references: [id])
+  items          OrderItem[]
+  deliveryOrders DeliveryOrder[]
+  transactions   Transaction[]
+  loyaltyTxns    LoyaltyTransaction[] @relation("OrderToLoyaltyTxn")
+
+  @@map("orders")
+}
+
+model OrderItem {
+  id             Int     @id @default(autoincrement())
+  order_id       Int
+  product_id     Int
+  quantity       Int
+  price          Float   // Price at time of order
+  notes          String?
+  customizations Json?   // e.g. { "remove": ["sugar"], "add": ["chia seeds"] }
+
+  order   Order   @relation(fields: [order_id], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [product_id], references: [id])
+
+  @@map("order_items")
+}
+
+// -----------------------------------------------------------------------------
+// DELIVERY
+// -----------------------------------------------------------------------------
+
+enum DeliveryStatus {
+  NEW
+  ACCEPTED
+  PREPARING
+  READY
+  OUT_FOR_DELIVERY
+  COMPLETED
+  CANCELLED
+}
+
+model DeliveryOrder {
+  id          Int            @id @default(autoincrement())
+  order_id    Int
+  customer_id Int
+  address     String
+  notes       String?
+  status      DeliveryStatus @default(NEW)
+  created_at  DateTime       @default(now())
+
+  order    Order    @relation(fields: [order_id], references: [id])
+  customer Customer @relation(fields: [customer_id], references: [id])
+
+  @@map("delivery_orders")
+}
+
+// -----------------------------------------------------------------------------
+// TRANSACTIONS & PAYMENTS
+// -----------------------------------------------------------------------------
+
+enum PaymentMethod {
+  CASH
+  CARD
+  WALLET
+}
+
+enum TransactionStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+}
+
+model Transaction {
+  id             Int               @id @default(autoincrement())
+  order_id       Int
+  user_id        Int               // Cashier who processed it
+  payment_method PaymentMethod
+  amount         Float
+  status         TransactionStatus @default(COMPLETED)
+  created_at     DateTime          @default(now())
+
+  order Order @relation(fields: [order_id], references: [id])
+  user  User  @relation(fields: [user_id], references: [id])
+
+  @@map("transactions")
+}
+
+// -----------------------------------------------------------------------------
+// LOYALTY SYSTEM
+// -----------------------------------------------------------------------------
+
+model LoyaltyAccount {
+  customer_id    Int @id
+  points_balance Int @default(0)
+
+  customer Customer @relation(fields: [customer_id], references: [id], onDelete: Cascade)
+
+  @@map("loyalty_accounts")
+}
+
+enum LoyaltyTxnType {
+  EARNED
+  REDEEMED
+  MANUAL
+}
+
+model LoyaltyTransaction {
+  id               Int            @id @default(autoincrement())
+  customer_id      Int
+  points_change    Int            // Positive for earned/manual add, negative for redeemed/deduct
+  type             LoyaltyTxnType
+  related_order_id Int?
+  created_at       DateTime       @default(now())
+
+  customer Customer @relation(fields: [customer_id], references: [id])
+  order    Order?   @relation("OrderToLoyaltyTxn", fields: [related_order_id], references: [id])
+
+  @@map("loyalty_transactions")
+}
+
+// -----------------------------------------------------------------------------
+// INVENTORY
+// -----------------------------------------------------------------------------
+
+model InventoryItem {
+  id       Int     @id @default(autoincrement())
+  name     String  @unique
+  quantity Float   @default(0)
+  unit     String  // e.g. "kg", "liters", "units"
+
+  transactions StockTransaction[]
+
+  @@map("inventory_items")
+}
+
+enum StockTxnType {
+  RESTOCK
+  USAGE
+  ADJUSTMENT
+}
+
+model StockTransaction {
+  id                Int          @id @default(autoincrement())
+  inventory_item_id Int
+  change_amount     Float        // Positive for restock, negative for usage
+  type              StockTxnType
+  created_at        DateTime     @default(now())
+
+  item InventoryItem @relation(fields: [inventory_item_id], references: [id])
+
+  @@map("stock_transactions")
+}
+
+// -----------------------------------------------------------------------------
+// ACTIVITY LOGGING
+// -----------------------------------------------------------------------------
+
+model ActivityLog {
+  id         Int      @id @default(autoincrement())
+  user_id    Int
+  action     String   // e.g. "LOGIN", "CREATE_ORDER", "UPDATE_INVENTORY"
+  entity     String?  // e.g. "Order", "Product"
+  entity_id  Int?     // The ID of the affected record
+  metadata   Json?    // Any extra details
+  created_at DateTime @default(now())
+
+  user User @relation(fields: [user_id], references: [id])
+
+  @@map("activity_logs")
+}
