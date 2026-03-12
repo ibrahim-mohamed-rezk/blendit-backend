@@ -31,6 +31,30 @@
 $ npm install
 ```
 
+## Database (PostgreSQL)
+
+Your backend expects PostgreSQL at `localhost:5432` (see `DATABASE_URL` in `.env`).
+
+- **Option A (recommended)**: Install PostgreSQL on Windows and ensure the service is running.
+  - Create a DB named `blendit`
+  - Username/password should match `.env` (defaults are `postgres` / `postgres`)
+- **Option B**: Use Docker Compose (requires Docker Desktop installed)
+  - `backend/docker-compose.yml` already defines a `postgres` service for you.
+
+After Postgres is running, initialize the schema:
+
+```bash
+# from backend/
+npx prisma migrate dev --name init
+npx prisma db seed
+```
+
+If you want the API to start even when Postgres is offline (dev only), set:
+
+```bash
+PRISMA_CONNECT_ON_STARTUP="false"
+```
+
 ## Compile and run the project
 
 ```bash

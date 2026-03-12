@@ -15,7 +15,12 @@ export class CustomersService {
   async findAll(page = 1, limit = 10) {
     const skip = (page - 1) * limit;
     const [data, total] = await this.prisma.$transaction([
-      this.prisma.customer.findMany({ skip, take: limit, orderBy: { created_at: 'desc' } }),
+      this.prisma.customer.findMany({
+        skip,
+        take: limit,
+        orderBy: { created_at: 'desc' },
+        include: { loyaltyAccount: true },
+      }),
       this.prisma.customer.count(),
     ]);
     return { data, total, page, limit };

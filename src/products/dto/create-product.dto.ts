@@ -35,4 +35,14 @@ export class CreateProductDto {
   @IsOptional()
   @IsBoolean()
   is_available?: boolean;
+
+  @ApiPropertyOptional({ default: false })
+  @IsOptional()
+  @IsBoolean()
+  is_popular?: boolean;
+
+  @ApiPropertyOptional({ default: false })
+  @IsOptional()
+  @IsBoolean()
+  is_new?: boolean;
 }

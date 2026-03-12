@@ -74,6 +74,8 @@ model Product {
   ingredients  String[] // Array of ingredient names
   image_url    String?
   is_available Boolean  @default(true)
+  is_popular   Boolean  @default(false)
+  is_new       Boolean  @default(false)
   created_at   DateTime @default(now())
   updated_at   DateTime @updatedAt
 
