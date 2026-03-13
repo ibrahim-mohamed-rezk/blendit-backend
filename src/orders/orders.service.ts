@@ -1,20 +1,22 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { SettingsService } from '../settings/settings.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { OrderStatus, PaymentMethod } from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
-const TAX_RATE = 0.15; // 15% tax
-const LOYALTY_POINTS_PER_UNIT = 1; // 1 point per currency unit spent
-const LOYALTY_POINT_VALUE = 0.01; // Each point = 0.01 currency
+const DEFAULT_TAX_RATE = 0.15; // 15% – used when store taxRate is missing
+const DEFAULT_POINTS_PER_CURRENCY = 1;
+const DEFAULT_CURRENCY_VALUE_PER_POINT = 0.01;
 
 @Injectable()
 export class OrdersService {
   constructor(
     private prisma: PrismaService,
     private eventEmitter: EventEmitter2,
+    private settingsService: SettingsService,
   ) {}
 
   private async generateOrderNumber(): Promise<string> {
@@ -25,6 +27,15 @@ export class OrdersService {
   }
 
   async create(dto: CreateOrderDto, cashierId: number) {
+    const [storeSettings, loyaltySettings] = await Promise.all([
+      this.settingsService.getStore(),
+      this.settingsService.getLoyalty(),
+    ]);
+    const taxRatePct = Number(storeSettings?.taxRate) ?? 15;
+    const taxRate = taxRatePct / 100;
+    const currencyValuePerPoint = Number(loyaltySettings?.currencyValuePerPoint) ?? DEFAULT_CURRENCY_VALUE_PER_POINT;
+    const pointsPerCurrency = Number(loyaltySettings?.pointsPerCurrency) || DEFAULT_POINTS_PER_CURRENCY;
+
     // 1. Validate and calculate items
     let subtotal = 0;
     const itemsData: any[] = [];
@@ -45,7 +56,7 @@ export class OrdersService {
       });
     }
 
-    // 2. Apply loyalty redemption discount
+    // 2. Apply loyalty redemption discount (using store loyalty settings)
     let loyaltyDiscount = 0;
     if (dto.loyalty_points_redeemed && dto.loyalty_points_redeemed > 0 && dto.customer_id) {
       const account = await this.prisma.loyaltyAccount.findUnique({
@@ -55,14 +66,14 @@ export class OrdersService {
       if (account.points_balance < dto.loyalty_points_redeemed) {
         throw new BadRequestException(`Insufficient loyalty points. Balance: ${account.points_balance}`);
       }
-      loyaltyDiscount = dto.loyalty_points_redeemed * LOYALTY_POINT_VALUE;
+      loyaltyDiscount = dto.loyalty_points_redeemed * currencyValuePerPoint;
     }
 
-    // 3. Calculate totals
+    // 3. Calculate totals (tax from store settings)
     const customDiscount = dto.discount || 0;
     const totalDiscount = customDiscount + loyaltyDiscount;
     const discountedSubtotal = Math.max(subtotal - totalDiscount, 0);
-    const tax = discountedSubtotal * TAX_RATE;
+    const tax = discountedSubtotal * taxRate;
     const total = discountedSubtotal + tax;
 
     // 4. Create order in a transaction
@@ -111,9 +122,9 @@ export class OrdersService {
         });
       }
 
-      // 7. Award loyalty points on purchase
+      // 7. Award loyalty points on purchase (using store loyalty settings)
       if (dto.customer_id) {
-        const pointsEarned = Math.floor(total * LOYALTY_POINTS_PER_UNIT);
+        const pointsEarned = Math.floor(total * pointsPerCurrency);
         await tx.loyaltyAccount.upsert({
           where: { customer_id: dto.customer_id },
           update: { points_balance: { increment: pointsEarned } },
@@ -151,9 +162,16 @@ export class OrdersService {
     return order;
   }
 
-  async findAll(page = 1, limit = 10, status?: OrderStatus, type?: string, date?: string) {
+  async findAll(
+    page = 1,
+    limit = 10,
+    status?: OrderStatus,
+    type?: string,
+    date?: string,
+    search?: string,
+  ) {
     const skip = (page - 1) * limit;
-    const where: any = {};
+    const where: Record<string, unknown> = {};
     if (status) where.status = status;
     if (type) where.order_type = type;
     if (date) {
@@ -161,6 +179,14 @@ export class OrdersService {
       const end = new Date(date);
       end.setDate(end.getDate() + 1);
       where.created_at = { gte: start, lt: end };
+    }
+    if (search) {
+      where.OR = [
+        { order_number: { contains: search, mode: 'insensitive' } },
+        { customer: { name: { contains: search, mode: 'insensitive' } } },
+        { customer: { phone: { contains: search, mode: 'insensitive' } } },
+        { items: { some: { product: { name: { contains: search, mode: 'insensitive' } } } } },
+      ];
     }
     const [data, total] = await this.prisma.$transaction([
       this.prisma.order.findMany({
@@ -190,7 +216,7 @@ export class OrdersService {
 
   async updateStatus(id: number, dto: UpdateOrderStatusDto, user?: { role?: { name: string } }) {
     const order = await this.findOne(id);
-    const cashierEditableStatuses = [OrderStatus.PENDING, OrderStatus.PREPARING, OrderStatus.READY];
+    const cashierEditableStatuses: OrderStatus[] = [OrderStatus.PENDING, OrderStatus.PREPARING, OrderStatus.READY];
     if (user?.role?.name === 'CASHIER' && !cashierEditableStatuses.includes(order.status)) {
       throw new ForbiddenException('Cashier can only update status of pending, preparing, or ready orders');
     }
@@ -205,11 +231,15 @@ export class OrdersService {
 
   async update(id: number, dto: UpdateOrderDto, user: { role?: { name: string } }) {
     const order = await this.findOne(id);
-    const cashierEditableStatuses = [OrderStatus.PENDING, OrderStatus.PREPARING, OrderStatus.READY];
+    const cashierEditableStatuses: OrderStatus[] = [OrderStatus.PENDING, OrderStatus.PREPARING, OrderStatus.READY];
     if (user?.role?.name === 'CASHIER' && !cashierEditableStatuses.includes(order.status)) {
       throw new ForbiddenException('Cashier can only update pending, preparing, or ready orders');
     }
     if (!dto.items?.length) throw new BadRequestException('Order must have at least one item');
+
+    const storeSettings = await this.settingsService.getStore();
+    const taxRatePct = Number(storeSettings?.taxRate) ?? DEFAULT_TAX_RATE * 100;
+    const taxRate = taxRatePct / 100;
 
     let subtotal = 0;
     const itemsData: any[] = [];
@@ -230,7 +260,7 @@ export class OrdersService {
 
     const discount = dto.discount ?? order.discount;
     const discountedSubtotal = Math.max(subtotal - discount, 0);
-    const tax = discountedSubtotal * TAX_RATE;
+    const tax = discountedSubtotal * taxRate;
     const total = discountedSubtotal + tax;
 
     const updated = await this.prisma.$transaction(async (tx) => {

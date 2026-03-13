@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Put, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Put, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { SettingsService } from './settings.service';
 import { UpdateStoreSettingsDto } from './dto/update-store-settings.dto';
@@ -24,6 +24,7 @@ export class SettingsController {
   @Put('store')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('SUPER_ADMIN', 'ADMIN')
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: false, transform: true }))
   @ApiOperation({ summary: 'Update store settings' })
   updateStore(@Body() dto: UpdateStoreSettingsDto) {
     return this.settingsService.updateStore(dto);

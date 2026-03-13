@@ -1,6 +1,33 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsEnum, IsInt, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { Type } from 'class-transformer';
+import { IsEnum, IsInt, IsNotEmpty, IsOptional, IsString, Min } from 'class-validator';
 import { DeliveryStatus } from '@prisma/client';
+
+export class GetDeliveryOrdersQueryDto {
+  @ApiPropertyOptional({ default: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number = 1;
+
+  @ApiPropertyOptional({ default: 10 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  limit?: number = 10;
+
+  @ApiPropertyOptional({ enum: DeliveryStatus, description: 'Filter by delivery status' })
+  @IsOptional()
+  @IsEnum(DeliveryStatus)
+  status?: DeliveryStatus;
+
+  @ApiPropertyOptional({ description: 'Search by order number, customer name or phone' })
+  @IsOptional()
+  @IsString()
+  search?: string;
+}
 
 export class UpdateDeliveryStatusDto {
   @ApiProperty({ enum: DeliveryStatus })

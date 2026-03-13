@@ -1,21 +1,28 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, IsString, IsNumber, IsArray, ValidateNested } from 'class-validator';
-import { Type } from 'class-transformer';
+import { IsOptional, IsString, IsNumber, IsArray, ValidateNested, IsBoolean, Allow } from 'class-validator';
+import { Type, Expose } from 'class-transformer';
 
 class OpeningHourDto {
+  @Expose()
   @ApiPropertyOptional()
   @IsString()
   day: string;
 
+  @Expose()
   @ApiPropertyOptional()
   @IsString()
   open: string;
 
+  @Expose()
   @ApiPropertyOptional()
   @IsString()
   close: string;
 
+  @Expose()
+  @Allow()
   @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
   isClosed?: boolean;
 }
 

@@ -25,10 +25,17 @@ export class DeliveryService {
     return delivery;
   }
 
-  async findAll(page = 1, limit = 10, status?: string) {
+  async findAll(page = 1, limit = 10, status?: string, search?: string) {
     const skip = (page - 1) * limit;
-    const where: any = {};
+    const where: { status?: string; OR?: Array<Record<string, unknown>> } = {};
     if (status) where.status = status;
+    if (search) {
+      where.OR = [
+        { order: { order_number: { contains: search, mode: 'insensitive' } } },
+        { customer: { name: { contains: search, mode: 'insensitive' } } },
+        { customer: { phone: { contains: search, mode: 'insensitive' } } },
+      ];
+    }
     const [data, total] = await this.prisma.$transaction([
       this.prisma.deliveryOrder.findMany({
         where, skip, take: limit,

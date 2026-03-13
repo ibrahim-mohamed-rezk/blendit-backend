@@ -90,7 +90,7 @@ export class ProductsService {
     return this.prisma.product.update({ where: { id }, data: dto, include: { category: true } });
   }
 
-  async remove(id: number) {
+  async remove(id: number) { 
     await this.findOne(id);
     const usedInOrders = await this.prisma.orderItem.count({ where: { product_id: id } });
     if (usedInOrders > 0) {
@@ -99,6 +99,6 @@ export class ProductsService {
       );
     }
     await this.prisma.product.delete({ where: { id } });
-    return { message: `Product #${id} deleted` };
+    return { message: `Product #${id} deleted` }; 
   }
 }

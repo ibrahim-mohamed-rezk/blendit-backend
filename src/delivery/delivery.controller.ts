@@ -1,11 +1,10 @@
 import { Body, Controller, Get, Param, ParseIntPipe, Post, Put, Query, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { DeliveryService } from './delivery.service';
-import { UpdateDeliveryStatusDto, CreateDeliveryOrderDto, UpdateDeliveryOrderDto } from './dto/delivery.dto';
+import { UpdateDeliveryStatusDto, CreateDeliveryOrderDto, UpdateDeliveryOrderDto, GetDeliveryOrdersQueryDto } from './dto/delivery.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
-import { PaginationDto } from '../common/dto/pagination.dto';
 
 @ApiTags('Delivery')
 @ApiBearerAuth()
@@ -21,10 +20,14 @@ export class DeliveryController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'Get all delivery orders (paginated)' })
-  @ApiQuery({ name: 'status', required: false })
-  findAll(@Query() pagination: PaginationDto, @Query('status') status?: string) {
-    return this.deliveryService.findAll(pagination.page, pagination.limit, status);
+  @ApiOperation({ summary: 'Get all delivery orders (paginated, filter by status, search)' })
+  findAll(@Query() query: GetDeliveryOrdersQueryDto) {
+    return this.deliveryService.findAll(
+      query.page ?? 1,
+      query.limit ?? 10,
+      query.status,
+      query.search?.trim(),
+    );
   }
 
   @Get(':id')

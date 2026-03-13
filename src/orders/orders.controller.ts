@@ -1,13 +1,12 @@
 import { Body, Controller, Get, Param, ParseIntPipe, Post, Put, Query, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { OrdersService } from './orders.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
+import { GetOrdersQueryDto } from './dto/get-orders-query.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { PaginationDto } from '../common/dto/pagination.dto';
-import { OrderStatus } from '@prisma/client';
 
 @ApiTags('Orders')
 @ApiBearerAuth()
@@ -23,17 +22,16 @@ export class OrdersController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'Get all orders (paginated, filterable)' })
-  @ApiQuery({ name: 'status', enum: OrderStatus, required: false })
-  @ApiQuery({ name: 'type', required: false })
-  @ApiQuery({ name: 'date', required: false, description: 'Filter by date (YYYY-MM-DD)' })
-  findAll(
-    @Query() pagination: PaginationDto,
-    @Query('status') status?: OrderStatus,
-    @Query('type') type?: string,
-    @Query('date') date?: string,
-  ) {
-    return this.ordersService.findAll(pagination.page, pagination.limit, status, type, date);
+  @ApiOperation({ summary: 'Get all orders (paginated, filter by status, type, date, search)' })
+  findAll(@Query() query: GetOrdersQueryDto) {
+    return this.ordersService.findAll(
+      query.page ?? 1,
+      query.limit ?? 10,
+      query.status,
+      query.type,
+      query.date,
+      query.search?.trim(),
+    );
   }
 
   @Get(':id')
