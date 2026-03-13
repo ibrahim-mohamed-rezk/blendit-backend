@@ -69,18 +69,19 @@ model Category {
 }
 
 model Product {
-  id           Int      @id @default(autoincrement())
-  name         String
-  description  String?
-  price        Float
-  category_id  Int
-  ingredients  String[] // Array of ingredient names
-  image_url    String?
-  is_available Boolean  @default(true)
-  is_popular   Boolean  @default(false)
-  is_new       Boolean  @default(false)
-  created_at   DateTime @default(now())
-  updated_at   DateTime @updatedAt
+  id                    Int      @id @default(autoincrement())
+  name                  String
+  description           String?
+  price                 Float
+  category_id           Int
+  ingredients           String[] // Array of ingredient names (for POS modifiers: remove/less/extra)
+  customization_options Json?    // [{ type: "no_sugar", label: "No sugar" }, ...] - which modifiers this product supports
+  image_url             String?
+  is_available         Boolean  @default(true)
+  is_popular           Boolean  @default(false)
+  is_new               Boolean  @default(false)
+  created_at           DateTime @default(now())
+  updated_at           DateTime @updatedAt
 
   category   Category    @relation(fields: [category_id], references: [id])
   orderItems OrderItem[]

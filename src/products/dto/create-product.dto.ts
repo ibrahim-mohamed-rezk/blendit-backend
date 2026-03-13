@@ -1,5 +1,16 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsArray, IsBoolean, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, IsUrl } from 'class-validator';
+import { Type } from 'class-transformer';
+import { IsArray, IsBoolean, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, ValidateNested } from 'class-validator';
+
+export class CustomizationOptionDto {
+  @ApiProperty({ example: 'custom_option' })
+  @IsString()
+  type: string;
+
+  @ApiProperty({ example: 'No sugar' })
+  @IsString()
+  label: string;
+}
 
 export class CreateProductDto {
   @ApiProperty()
@@ -20,11 +31,21 @@ export class CreateProductDto {
   @IsInt()
   category_id: number;
 
-  @ApiPropertyOptional({ type: [String], description: 'List of ingredients' })
+  @ApiPropertyOptional({ type: [String], description: 'List of ingredients (for POS: remove/less/extra per ingredient)' })
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
   ingredients?: string[];
+
+  @ApiPropertyOptional({
+    type: [CustomizationOptionDto],
+    description: 'Customization options for this product (e.g. No sugar, Extra shot). Shown in POS for cashier to select.',
+  })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => CustomizationOptionDto)
+  customization_options?: CustomizationOptionDto[];
 
   @ApiPropertyOptional()
   @IsOptional()

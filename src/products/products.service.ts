@@ -42,18 +42,23 @@ export class ProductsService {
   }
 
   // Products
-  async create(dto: CreateProductDto) { 
-    const data = {
+  async create(dto: CreateProductDto) {
+    const data: Record<string, unknown> = {
       name: dto.name,
-      description: dto.description,
+      description: dto.description ?? null,
       price: dto.price,
       category_id: dto.category_id,
-      ingredients: dto.ingredients || [],
-      image_url: dto.image_url,
+      ingredients: dto.ingredients ?? [],
+      image_url: dto.image_url ?? null,
       is_available: dto.is_available ?? true,
       is_popular: dto.is_popular ?? false,
       is_new: dto.is_new ?? false,
     };
+    if (dto.customization_options !== undefined && dto.customization_options !== null) {
+      data.customization_options = Array.isArray(dto.customization_options)
+        ? dto.customization_options
+        : null;
+    }
     return this.prisma.product.create({
       data: data as Parameters<typeof this.prisma.product.create>[0]['data'],
       include: { category: true },
@@ -87,7 +92,17 @@ export class ProductsService {
 
   async update(id: number, dto: UpdateProductDto) {
     await this.findOne(id);
-    return this.prisma.product.update({ where: { id }, data: dto, include: { category: true } });
+    const data: Record<string, unknown> = { ...dto };
+    if (dto.customization_options !== undefined) {
+      data.customization_options = Array.isArray(dto.customization_options)
+        ? dto.customization_options
+        : null;
+    }
+    return this.prisma.product.update({
+      where: { id },
+      data: data as Parameters<typeof this.prisma.product.update>[0]['data'],
+      include: { category: true },
+    });
   }
 
   async remove(id: number) { 
