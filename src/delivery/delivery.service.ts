@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { Prisma, DeliveryStatus } from '@prisma/client';
 import { UpdateDeliveryStatusDto, CreateDeliveryOrderDto, UpdateDeliveryOrderDto } from './dto/delivery.dto';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
@@ -27,8 +28,8 @@ export class DeliveryService {
 
   async findAll(page = 1, limit = 10, status?: string, search?: string) {
     const skip = (page - 1) * limit;
-    const where: { status?: string; OR?: Array<Record<string, unknown>> } = {};
-    if (status) where.status = status;
+    const where: Prisma.DeliveryOrderWhereInput = {};
+    if (status) where.status = status as DeliveryStatus;
     if (search) {
       where.OR = [
         { order: { order_number: { contains: search, mode: 'insensitive' } } },

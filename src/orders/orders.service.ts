@@ -1,6 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { SettingsService } from '../settings/settings.service';
+import { ActivityLogsService } from '../activity-logs/activity-logs.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
@@ -17,6 +18,7 @@ export class OrdersService {
     private prisma: PrismaService,
     private eventEmitter: EventEmitter2,
     private settingsService: SettingsService,
+    private activityLogs: ActivityLogsService,
   ) {}
 
   private async generateOrderNumber(): Promise<string> {
@@ -156,7 +158,14 @@ export class OrdersService {
       return createdOrder;
     });
 
-    // 9. Emit real-time events
+    // 9. Activity log and real-time events
+    await this.activityLogs.create({
+      user_id: cashierId,
+      action: 'create_order',
+      entity: 'Order',
+      entity_id: order.id,
+      metadata: { order_number: order.order_number, total: order.total },
+    });
     this.eventEmitter.emit('order.created', order);
 
     return order;
