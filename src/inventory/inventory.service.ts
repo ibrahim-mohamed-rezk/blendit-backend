@@ -52,7 +52,10 @@ export class InventoryService {
 
   async remove(id: number) {
     await this.findOne(id);
-    await this.prisma.inventoryItem.delete({ where: { id } });
+    await this.prisma.$transaction([
+      this.prisma.stockTransaction.deleteMany({ where: { inventory_item_id: id } }),
+      this.prisma.inventoryItem.delete({ where: { id } }),
+    ]);
     return { message: `Inventory item #${id} deleted` };
   }
 

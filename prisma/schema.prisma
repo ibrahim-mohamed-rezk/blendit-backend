@@ -239,6 +239,19 @@ model LoyaltyTransaction {
   @@map("loyalty_transactions")
 }
 
+model LoyaltyGift {
+  id               Int      @id @default(autoincrement())
+  name             String
+  description      String?
+  points_required  Int
+  discount_value   Float    // EGP value when redeemed
+  is_active        Boolean  @default(true)
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
+
+  @@map("loyalty_gifts")
+}
+
 // -----------------------------------------------------------------------------
 // INVENTORY
 // -----------------------------------------------------------------------------
@@ -267,7 +280,7 @@ model StockTransaction {
   type              StockTxnType
   created_at        DateTime     @default(now())
 
-  item InventoryItem @relation(fields: [inventory_item_id], references: [id])
+  item InventoryItem @relation(fields: [inventory_item_id], references: [id], onDelete: Cascade)
 
   @@map("stock_transactions")
 }
