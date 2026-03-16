@@ -271,7 +271,7 @@ model InventoryItem {
 enum StockTxnType {
   RESTOCK
   USAGE
-  ADJUSTMENT
+  ADJUSTMENT 
 }
 
 model StockTransaction {
