@@ -5,7 +5,8 @@ import { ActivityLogsService } from '../activity-logs/activity-logs.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
-import { OrderStatus, PaymentMethod } from '@prisma/client';
+import { RefundOrderDto } from './dto/refund-order.dto';
+import { OrderStatus, PaymentMethod, TransactionStatus } from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
 const DEFAULT_TAX_RATE = 0.15; // 15% – used when store taxRate is missing
@@ -200,7 +201,12 @@ export class OrdersService {
     const [data, total] = await this.prisma.$transaction([
       this.prisma.order.findMany({
         where, skip, take: limit,
-        include: { items: { include: { product: true } }, customer: true, deliveryOrders: true },
+        include: {
+          items: { include: { product: true } },
+          customer: true,
+          transactions: true,
+          deliveryOrders: true,
+        },
         orderBy: { created_at: 'desc' },
       }),
       this.prisma.order.count({ where }),
@@ -289,6 +295,54 @@ export class OrdersService {
     });
 
     this.eventEmitter.emit('order.updated', updated);
+    return updated;
+  }
+
+  async refund(id: number, dto: RefundOrderDto, user: { id: number; role?: { name: string } }) {
+    const order = await this.prisma.order.findUnique({
+      where: { id },
+      include: {
+        items: { include: { product: true } },
+        customer: true,
+        transactions: true,
+      },
+    });
+    if (!order) throw new NotFoundException(`Order #${id} not found`);
+
+    const hasCompletedTxn = order.transactions?.some((t) => t.status === TransactionStatus.COMPLETED);
+    if (!hasCompletedTxn) {
+      throw new BadRequestException('Order has no completed payment to refund');
+    }
+
+    // Mark completed payments as refunded and set order status to REFUNDED
+    const updated = await this.prisma.order.update({
+      where: { id },
+      data: {
+        status: OrderStatus.REFUNDED,
+        transactions: {
+          updateMany: {
+            where: { status: TransactionStatus.COMPLETED },
+            data: { status: TransactionStatus.REFUNDED },
+          },
+        },
+      },
+      include: {
+        items: { include: { product: true } },
+        customer: true,
+        transactions: true,
+        deliveryOrders: true,
+      },
+    });
+
+    await this.activityLogs.create({
+      user_id: user.id,
+      action: 'refund',
+      entity: 'Order',
+      entity_id: id,
+      metadata: dto?.reason ? { reason: dto.reason } : undefined,
+    });
+
+    this.eventEmitter.emit('order.refunded', updated);
     return updated;
   }
 }

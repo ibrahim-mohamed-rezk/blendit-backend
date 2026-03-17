@@ -20,7 +20,7 @@ export class DeliveryService {
         notes: dto.notes,
         status: 'NEW',
       },
-      include: { order: { include: { items: { include: { product: true } } } }, customer: true },
+      include: { order: { include: { items: { include: { product: true } }, transactions: true } }, customer: true },
     });
     this.eventEmitter.emit('delivery.created', delivery);
     return delivery;
@@ -40,7 +40,7 @@ export class DeliveryService {
     const [data, total] = await this.prisma.$transaction([
       this.prisma.deliveryOrder.findMany({
         where, skip, take: limit,
-        include: { order: { include: { items: { include: { product: true } } } }, customer: true },
+        include: { order: { include: { items: { include: { product: true } }, transactions: true } }, customer: true },
         orderBy: { created_at: 'desc' },
       }),
       this.prisma.deliveryOrder.count({ where }),
@@ -51,7 +51,7 @@ export class DeliveryService {
   async findOne(id: number) {
     const order = await this.prisma.deliveryOrder.findUnique({
       where: { id },
-      include: { order: { include: { items: { include: { product: true } } } }, customer: true },
+      include: { order: { include: { items: { include: { product: true } }, transactions: true } }, customer: true },
     });
     if (!order) throw new NotFoundException(`Delivery order #${id} not found`);
     return order;
@@ -76,7 +76,7 @@ export class DeliveryService {
     const updated = await this.prisma.deliveryOrder.update({
       where: { id },
       data,
-      include: { order: { include: { items: { include: { product: true } } } }, customer: true },
+      include: { order: { include: { items: { include: { product: true } }, transactions: true } }, customer: true },
     });
     this.eventEmitter.emit('delivery.updated', updated);
     return updated;

@@ -4,6 +4,7 @@ import { OrdersService } from './orders.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
+import { RefundOrderDto } from './dto/refund-order.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { OrderStatus, OrderType } from '@prisma/client';
@@ -73,5 +74,15 @@ export class OrdersController {
     @CurrentUser() user: { role?: { name: string } },
   ) {
     return this.ordersService.update(id, dto, user);
+  }
+
+  @Post(':id/refund')
+  @ApiOperation({ summary: 'Refund an order (marks transactions as refunded)' })
+  refund(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: RefundOrderDto,
+    @CurrentUser() user: { id: number; role?: { name: string } },
+  ) {
+    return this.ordersService.refund(id, dto, user);
   }
 }
