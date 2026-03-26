@@ -4,3 +4,7 @@ node_modules
 
 /generated/prisma
 /dist
+
+# Customer display uploads (keep folder via .gitkeep)
+uploads/customer-display/*
+!uploads/customer-display/.gitkeep

@@ -63,4 +63,19 @@ export class UpdateStoreSettingsDto {
   @ValidateNested({ each: true })
   @Type(() => OpeningHourDto)
   openingHours?: OpeningHourDto[];
+
+  @ApiPropertyOptional({ description: 'External video URL for customer display background (mp4/webm, etc.)' })
+  @IsOptional()
+  @IsString()
+  customerDisplayVideoUrl?: string;
+
+  @ApiPropertyOptional({ description: 'Server path to uploaded display video (set by upload endpoint)' })
+  @IsOptional()
+  @IsString()
+  customerDisplayVideoPath?: string;
+
+  @ApiPropertyOptional({ description: 'Subtitle under logo on customer display' })
+  @IsOptional()
+  @IsString()
+  customerDisplayTagline?: string;
 }
