@@ -1,9 +1,21 @@
-import { BadRequestException, Body, Controller, Delete, Get, Param, ParseIntPipe, Post, Put, Query, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  ParseIntPipe,
+  Post,
+  Put,
+  Query,
+  UploadedFile,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { diskStorage } from 'multer';
-import { existsSync, mkdirSync } from 'fs';
-import { extname, join } from 'path';
+import { memoryStorage } from 'multer';
 import { ProductsService } from './products.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
@@ -13,15 +25,23 @@ import { FindAllProductsQueryDto } from './dto/find-all-products-query.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
+import { CloudinaryService } from '../common/services/cloudinary.service';
 
-const productUploadDir = join(process.cwd(), 'uploads', 'products');
+type UploadedMemoryFile = {
+  buffer: Buffer;
+  mimetype: string;
+  originalname: string;
+};
 
 @ApiTags('Products')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
 @Controller('')
 export class ProductsController {
-  constructor(private readonly productsService: ProductsService) {}
+  constructor(
+    private readonly productsService: ProductsService,
+    private readonly cloudinaryService: CloudinaryService,
+  ) {}
 
   // --- Categories ---
   @Post('categories')
@@ -90,25 +110,17 @@ export class ProductsController {
         }
         cb(null, true);
       },
-      storage: diskStorage({
-        destination: (_req, _file, cb) => {
-          if (!existsSync(productUploadDir)) {
-            mkdirSync(productUploadDir, { recursive: true });
-          }
-          cb(null, productUploadDir);
-        },
-        filename: (_req, file, cb) => {
-          const ext = extname(file.originalname || '').replace(/[^a-zA-Z0-9.]/g, '') || '.jpg';
-          cb(null, `product-${Date.now()}-${Math.random().toString(36).slice(2, 9)}${ext}`);
-        },
-      }),
+      storage: memoryStorage(),
     }),
   )
   @ApiOperation({ summary: 'Upload product image' })
-  uploadProductImage(@UploadedFile() file: { filename: string } | undefined) {
+  async uploadProductImage(@UploadedFile() file: UploadedMemoryFile | undefined) {
     if (!file) throw new BadRequestException('No file uploaded');
-    const relativePath = `/uploads/products/${file.filename}`;
-    return { path: relativePath, filename: file.filename };
+    const uploaded = await this.cloudinaryService.uploadBuffer(file.buffer, {
+      folder: 'blendit/products',
+      resource_type: 'image',
+    });
+    return { path: uploaded.secureUrl, filename: uploaded.publicId };
   }
 
   @Get('products')

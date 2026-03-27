@@ -13,22 +13,28 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { diskStorage } from 'multer';
-import { existsSync, mkdirSync } from 'fs';
-import { extname, join } from 'path';
+import { memoryStorage } from 'multer';
 import { SettingsService } from './settings.service';
 import { UpdateStoreSettingsDto } from './dto/update-store-settings.dto';
 import { UpdateLoyaltySettingsDto } from './dto/update-loyalty-settings.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
+import { CloudinaryService } from '../common/services/cloudinary.service';
 
-const customerDisplayUploadDir = join(process.cwd(), 'uploads', 'customer-display');
+type UploadedMemoryFile = {
+  buffer: Buffer;
+  mimetype: string;
+  originalname: string;
+};
 
 @ApiTags('Settings')
 @Controller('settings')
 export class SettingsController {
-  constructor(private readonly settingsService: SettingsService) {}
+  constructor(
+    private readonly settingsService: SettingsService,
+    private readonly cloudinaryService: CloudinaryService,
+  ) {}
 
   @Get('customer-display')
   @ApiOperation({ summary: 'Public: customer display screen (video + copy)' })
@@ -77,26 +83,18 @@ export class SettingsController {
         }
         cb(null, true);
       },
-      storage: diskStorage({
-        destination: (_req, _file, cb) => {
-          if (!existsSync(customerDisplayUploadDir)) {
-            mkdirSync(customerDisplayUploadDir, { recursive: true });
-          }
-          cb(null, customerDisplayUploadDir);
-        },
-        filename: (_req, file, cb) => {
-          const ext = extname(file.originalname || '').replace(/[^a-zA-Z0-9.]/g, '') || '.mp4';
-          cb(null, `display-${Date.now()}-${Math.random().toString(36).slice(2, 9)}${ext}`);
-        },
-      }),
+      storage: memoryStorage(),
     }),
   )
   @ApiOperation({ summary: 'Upload customer display background video (replaces external URL)' })
-  async uploadCustomerDisplayVideo(@UploadedFile() file: { filename: string } | undefined) {
+  async uploadCustomerDisplayVideo(@UploadedFile() file: UploadedMemoryFile | undefined) {
     if (!file) throw new BadRequestException('No file uploaded');
-    const relativePath = `/uploads/customer-display/${file.filename}`;
-    await this.settingsService.setCustomerDisplayVideoUpload(relativePath);
-    return { path: relativePath, filename: file.filename };
+    const uploaded = await this.cloudinaryService.uploadBuffer(file.buffer, {
+      folder: 'blendit/customer-display',
+      resource_type: 'video',
+    });
+    await this.settingsService.setCustomerDisplayVideoCloudUrl(uploaded.secureUrl);
+    return { path: uploaded.secureUrl, filename: uploaded.publicId };
   }
 
   @Put('loyalty')

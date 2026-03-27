@@ -1,6 +1,4 @@
 import { Injectable } from '@nestjs/common';
-import { existsSync, unlinkSync } from 'fs';
-import { basename, join } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
 import { UpdateStoreSettingsDto } from './dto/update-store-settings.dto';
 import { UpdateLoyaltySettingsDto } from './dto/update-loyalty-settings.dto';
@@ -35,29 +33,9 @@ const DEFAULT_LOYALTY = {
   referralBonus: 75,
 };
 
-const CUSTOMER_DISPLAY_UPLOAD_DIR = join(process.cwd(), 'uploads', 'customer-display');
-
 @Injectable()
 export class SettingsService {
   constructor(private prisma: PrismaService) {}
-
-  /** Remove a file under uploads/customer-display only (no path traversal). */
-  unlinkCustomerDisplayFile(relativePath: string): void {
-    if (!relativePath || typeof relativePath !== 'string') return;
-    const normalized = relativePath.replace(/\\/g, '/');
-    if (!normalized.startsWith('/uploads/customer-display/')) return;
-    const name = basename(normalized);
-    if (!name || name === '.' || name === '..' || name.includes('..')) return;
-    const abs = join(CUSTOMER_DISPLAY_UPLOAD_DIR, name);
-    if (!abs.startsWith(CUSTOMER_DISPLAY_UPLOAD_DIR)) return;
-    if (existsSync(abs)) {
-      try {
-        unlinkSync(abs);
-      } catch {
-        // ignore
-      }
-    }
-  }
 
   /**
    * Merge DTO without letting `undefined` overwrite existing JSON (Nest DTO instances often
@@ -124,22 +102,15 @@ export class SettingsService {
     const patch = this.pickDefinedStorePatch(dto);
     const merged: Record<string, unknown> = { ...current, ...patch };
 
-    const prevPath = String(current.customerDisplayVideoPath ?? '').trim();
-    const prevUrl = String(current.customerDisplayVideoUrl ?? '').trim();
-
-    let pathToDeleteAfterSave: string | null = null;
-
     if (patch.customerDisplayVideoUrl !== undefined) {
       const nextUrl = String(patch.customerDisplayVideoUrl).trim();
       if (nextUrl !== '') {
-        // Switching to external URL: drop upload (delete file after DB save succeeds)
+        // Switching to an external URL (or Cloudinary URL): use URL, clear legacy path.
         merged.customerDisplayVideoPath = '';
         merged.customerDisplayVideoUrl = nextUrl;
-        if (prevPath) pathToDeleteAfterSave = prevPath;
       } else {
-        // Empty URL: keep uploaded file if any; only clear URL text
+        // Empty URL clears URL text while keeping any existing path value.
         merged.customerDisplayVideoUrl = '';
-        if (prevPath) merged.customerDisplayVideoPath = prevPath;
       }
     }
 
@@ -147,9 +118,7 @@ export class SettingsService {
       merged.customerDisplayVideoUrl = '';
     }
 
-    const saved = await this.setByKey('store', merged);
-    if (pathToDeleteAfterSave) this.unlinkCustomerDisplayFile(pathToDeleteAfterSave);
-    return saved;
+    return this.setByKey('store', merged);
   }
 
   /** Public payload for `/display` — no secrets */
@@ -172,19 +141,13 @@ export class SettingsService {
     };
   }
 
-  async setCustomerDisplayVideoUpload(relativePath: string): Promise<Record<string, unknown>> {
+  async setCustomerDisplayVideoCloudUrl(url: string): Promise<Record<string, unknown>> {
     const current = await this.getStore();
-    const newPath = relativePath.trim();
-    const oldPath = String(current.customerDisplayVideoPath ?? '').trim();
-    const saved = await this.setByKey('store', {
+    return this.setByKey('store', {
       ...current,
-      customerDisplayVideoPath: newPath,
-      customerDisplayVideoUrl: '',
+      customerDisplayVideoPath: '',
+      customerDisplayVideoUrl: url.trim(),
     });
-    if (oldPath && oldPath !== newPath) {
-      this.unlinkCustomerDisplayFile(oldPath);
-    }
-    return saved;
   }
 
   async updateLoyalty(dto: UpdateLoyaltySettingsDto): Promise<Record<string, unknown>> {
