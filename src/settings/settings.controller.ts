@@ -92,7 +92,7 @@ export class SettingsController {
     }),
   )
   @ApiOperation({ summary: 'Upload customer display background video (replaces external URL)' })
-  async uploadCustomerDisplayVideo(@UploadedFile() file: Express.Multer.File) {
+  async uploadCustomerDisplayVideo(@UploadedFile() file: { filename: string } | undefined) {
     if (!file) throw new BadRequestException('No file uploaded');
     const relativePath = `/uploads/customer-display/${file.filename}`;
     await this.settingsService.setCustomerDisplayVideoUpload(relativePath);

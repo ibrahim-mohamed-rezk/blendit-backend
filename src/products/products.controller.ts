@@ -105,7 +105,7 @@ export class ProductsController {
     }),
   )
   @ApiOperation({ summary: 'Upload product image' })
-  uploadProductImage(@UploadedFile() file: Express.Multer.File) {
+  uploadProductImage(@UploadedFile() file: { filename: string } | undefined) {
     if (!file) throw new BadRequestException('No file uploaded');
     const relativePath = `/uploads/products/${file.filename}`;
     return { path: relativePath, filename: file.filename };
