@@ -22,6 +22,27 @@ export class OrdersService {
     private activityLogs: ActivityLogsService,
   ) {}
 
+  private async resolveCashierId(inputCashierId?: number): Promise<number> {
+    if (typeof inputCashierId === 'number' && Number.isFinite(inputCashierId)) {
+      const exists = await this.prisma.user.findUnique({ where: { id: inputCashierId } });
+      if (exists) return inputCashierId;
+    }
+
+    const fallback = await this.prisma.user.findFirst({
+      where: {
+        is_active: true,
+        role: { name: { in: ['CASHIER', 'ADMIN', 'SUPER_ADMIN'] } },
+      },
+      orderBy: { id: 'asc' },
+    });
+
+    if (!fallback) {
+      throw new BadRequestException('No active cashier/admin user found to process this order');
+    }
+
+    return fallback.id;
+  }
+
   private async generateOrderNumber(): Promise<string> {
     const count = await this.prisma.order.count();
     const date = new Date();
@@ -29,15 +50,23 @@ export class OrdersService {
     return `BLD-${dateStr}-${String(count + 1).padStart(4, '0')}`;
   }
 
-  async create(dto: CreateOrderDto, cashierId: number) {
+  async create(dto: CreateOrderDto, cashierId?: number, source: 'POS' | 'PUBLIC' = 'POS') {
+    const resolvedCashierId = await this.resolveCashierId(cashierId);
     const [storeSettings, loyaltySettings] = await Promise.all([
       this.settingsService.getStore(),
       this.settingsService.getLoyalty(),
     ]);
-    const taxRatePct = Number(storeSettings?.taxRate) ?? 15;
+    const taxRateRaw = Number(storeSettings?.taxRate);
+    const taxRatePct = Number.isFinite(taxRateRaw) ? taxRateRaw : 15;
     const taxRate = taxRatePct / 100;
-    const currencyValuePerPoint = Number(loyaltySettings?.currencyValuePerPoint) ?? DEFAULT_CURRENCY_VALUE_PER_POINT;
-    const pointsPerCurrency = Number(loyaltySettings?.pointsPerCurrency) || DEFAULT_POINTS_PER_CURRENCY;
+    const currencyValuePerPointRaw = Number(loyaltySettings?.currencyValuePerPoint);
+    const currencyValuePerPoint = Number.isFinite(currencyValuePerPointRaw)
+      ? currencyValuePerPointRaw
+      : DEFAULT_CURRENCY_VALUE_PER_POINT;
+    const pointsPerCurrencyRaw = Number(loyaltySettings?.pointsPerCurrency);
+    const pointsPerCurrency = Number.isFinite(pointsPerCurrencyRaw) && pointsPerCurrencyRaw > 0
+      ? pointsPerCurrencyRaw
+      : DEFAULT_POINTS_PER_CURRENCY;
 
     // 1. Validate and calculate items
     let subtotal = 0;
@@ -85,14 +114,21 @@ export class OrdersService {
       const createdOrder = await tx.order.create({
         data: {
           order_number: orderNumber,
-          customer_id: dto.customer_id || null,
-          cashier_id: cashierId,
           order_type: dto.order_type,
           status: OrderStatus.PENDING,
           subtotal,
           tax,
           discount: totalDiscount,
           total,
+          customer:
+            dto.customer_id != null
+              ? {
+                  connect: { id: dto.customer_id },
+                }
+              : undefined,
+          cashier: {
+            connect: { id: resolvedCashierId },
+          },
           items: { create: itemsData },
         },
         include: { items: { include: { product: true } }, customer: true, cashier: { include: { role: true } } },
@@ -102,7 +138,7 @@ export class OrdersService {
       await tx.transaction.create({
         data: {
           order_id: createdOrder.id,
-          user_id: cashierId,
+          user_id: resolvedCashierId,
           payment_method: dto.payment_method as PaymentMethod,
           amount: total,
           status: 'COMPLETED',
@@ -143,7 +179,9 @@ export class OrdersService {
         });
       }
 
-      // 8. Create delivery order if type is DELIVERY
+      // 8. Create delivery order if type is DELIVERY.
+      // For PUBLIC website orders, also mirror non-delivery orders into delivery queue
+      // so POS delivery tab can track website incoming orders in one place.
       if (dto.order_type === 'DELIVERY' && dto.customer_id && dto.delivery_address) {
         await tx.deliveryOrder.create({
           data: {
@@ -154,6 +192,20 @@ export class OrdersService {
             status: 'NEW',
           },
         });
+      } else if (
+        source === 'PUBLIC' &&
+        dto.customer_id &&
+        dto.order_type !== 'DELIVERY'
+      ) {
+        await tx.deliveryOrder.create({
+          data: {
+            order_id: createdOrder.id,
+            customer_id: dto.customer_id,
+            address: dto.delivery_address?.trim() || 'Website order (walk-in pickup)',
+            notes: dto.delivery_notes?.trim() || 'Source: WEBSITE',
+            status: 'NEW',
+          },
+        });
       }
 
       return createdOrder;
@@ -161,7 +213,7 @@ export class OrdersService {
 
     // 9. Activity log and real-time events
     await this.activityLogs.create({
-      user_id: cashierId,
+      user_id: resolvedCashierId,
       action: 'create_order',
       entity: 'Order',
       entity_id: order.id,
@@ -253,7 +305,8 @@ export class OrdersService {
     if (!dto.items?.length) throw new BadRequestException('Order must have at least one item');
 
     const storeSettings = await this.settingsService.getStore();
-    const taxRatePct = Number(storeSettings?.taxRate) ?? DEFAULT_TAX_RATE * 100;
+    const taxRateRaw = Number(storeSettings?.taxRate);
+    const taxRatePct = Number.isFinite(taxRateRaw) ? taxRateRaw : DEFAULT_TAX_RATE * 100;
     const taxRate = taxRatePct / 100;
 
     let subtotal = 0;
@@ -283,7 +336,12 @@ export class OrdersService {
       return tx.order.update({
         where: { id },
         data: {
-          customer_id: dto.customer_id !== undefined ? dto.customer_id : order.customer_id,
+          customer:
+            dto.customer_id !== undefined
+              ? dto.customer_id === null
+                ? { disconnect: true }
+                : { connect: { id: dto.customer_id } }
+              : undefined,
           discount,
           subtotal,
           tax,

@@ -23,6 +23,16 @@ export class CreateProductDto {
   @IsString()
   description?: string;
 
+  @ApiPropertyOptional({ description: 'Short marketing tagline for website cards' })
+  @IsOptional()
+  @IsString()
+  tagline?: string;
+
+  @ApiPropertyOptional({ description: 'Tailwind color class for card accent, e.g. bg-pink-500' })
+  @IsOptional()
+  @IsString()
+  color?: string;
+
   @ApiProperty()
   @IsNumber()
   price: number;

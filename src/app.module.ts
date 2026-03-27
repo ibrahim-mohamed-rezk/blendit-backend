@@ -18,6 +18,7 @@ import { WebsocketsModule } from './websockets/websockets.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { PromotionsModule } from './promotions/promotions.module';
 import { SettingsModule } from './settings/settings.module';
+import { PublicModule } from './public/public.module';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { SettingsModule } from './settings/settings.module';
     AnalyticsModule,
     PromotionsModule,
     SettingsModule,
+    PublicModule,
   ],
 })
 export class AppModule {}

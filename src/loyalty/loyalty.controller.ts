@@ -26,19 +26,19 @@ class ManualAdjustDto {
 export class LoyaltyController {
   constructor(private readonly loyaltyService: LoyaltyService) {}
 
-  @Get(':customerId')
+  @Get('accounts/:customerId')
   @ApiOperation({ summary: 'Get loyalty account for customer' })
   getAccount(@Param('customerId', ParseIntPipe) customerId: number) {
     return this.loyaltyService.getAccount(customerId);
   }
 
-  @Get(':customerId/history')
+  @Get('accounts/:customerId/history')
   @ApiOperation({ summary: 'Get loyalty transaction history' })
   getHistory(@Param('customerId', ParseIntPipe) customerId: number, @Query() pagination: PaginationDto) {
     return this.loyaltyService.getHistory(customerId, pagination.page, pagination.limit);
   }
 
-  @Post(':customerId/adjust')
+  @Post('accounts/:customerId/adjust')
   @UseGuards(RolesGuard)
   @Roles('SUPER_ADMIN', 'ADMIN')
   @ApiOperation({ summary: 'Manually adjust loyalty points' })

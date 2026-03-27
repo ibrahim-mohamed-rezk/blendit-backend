@@ -52,6 +52,7 @@ model Customer {
   loyaltyAccount  LoyaltyAccount?
   loyaltyHistory  LoyaltyTransaction[]
   heldOrders      HeldOrder[]
+  favorites       CustomerFavorite[]
 
   @@map("customers")
 }
@@ -72,6 +73,8 @@ model Product {
   id                    Int      @id @default(autoincrement())
   name                  String
   description           String?
+  tagline               String?  // Short marketing hook shown on website cards
+  color                 String?  // Tailwind color class for card accent (e.g. "bg-pink-500")
   price                 Float
   category_id           Int
   ingredients           String[] // Array of ingredient names (for POS modifiers: remove/less/extra)
@@ -85,8 +88,21 @@ model Product {
 
   category   Category    @relation(fields: [category_id], references: [id])
   orderItems OrderItem[]
+  favorites  CustomerFavorite[]
 
   @@map("products")
+}
+
+model CustomerFavorite {
+  customer_id Int
+  product_id  Int
+  created_at  DateTime @default(now())
+
+  customer Customer @relation(fields: [customer_id], references: [id], onDelete: Cascade)
+  product  Product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
+
+  @@id([customer_id, product_id])
+  @@map("customer_favorites")
 }
 
 // -----------------------------------------------------------------------------
@@ -252,6 +268,21 @@ model LoyaltyGift {
   updated_at       DateTime @updatedAt
 
   @@map("loyalty_gifts")
+}
+
+model LoyaltyTier {
+  id               Int      @id @default(autoincrement())
+  name             String
+  points_threshold Int
+  color_from       String   @default("#22c55e")
+  color_to         String   @default("#10b981")
+  benefits         String[]
+  sort_order       Int      @default(0)
+  is_active        Boolean  @default(true)
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
+
+  @@map("loyalty_tiers")
 }
 
 // -----------------------------------------------------------------------------

@@ -46,6 +46,8 @@ export class ProductsService {
     const data: Record<string, unknown> = {
       name: dto.name,
       description: dto.description ?? null,
+      tagline: dto.tagline ?? null,
+      color: dto.color ?? null,
       price: dto.price,
       category_id: dto.category_id,
       ingredients: dto.ingredients ?? [],
