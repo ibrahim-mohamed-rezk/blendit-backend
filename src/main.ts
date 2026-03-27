@@ -69,8 +69,8 @@ async function bootstrap() {
     },
   });
 
-  const port = process.env.PORT || 7000;
-  await app.listen(port);
+  const port =process.env.PORT  || 7000;
+  await app.listen(port, '0.0.0.0');
   console.log(`\n🥤 BLENDiT POS API running on: http://localhost:${port}/api/v1`);
   console.log(`📚 Swagger docs: http://localhost:${port}/api/docs`);
 }
