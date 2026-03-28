@@ -41,6 +41,29 @@ export class CustomersService {
     return customer;
   }
 
+  /** Website login: exact phone match, or case-insensitive email match. */
+  async searchByPhoneOrEmail(lookup: string) {
+    const trimmed = lookup.trim();
+    if (!trimmed) {
+      throw new BadRequestException('Phone or email is required');
+    }
+    const looksLikeEmail = trimmed.includes('@');
+    if (looksLikeEmail) {
+      const customer = await this.prisma.customer.findFirst({
+        where: { email: { equals: trimmed, mode: 'insensitive' } },
+        include: { loyaltyAccount: true },
+      });
+      if (!customer) throw new NotFoundException('Customer not found');
+      return customer;
+    }
+    const customer = await this.prisma.customer.findUnique({
+      where: { phone: trimmed },
+      include: { loyaltyAccount: true },
+    });
+    if (!customer) throw new NotFoundException('Customer not found');
+    return customer;
+  }
+
   async upsertByPhone(dto: CreateCustomerDto) {
     const existing = await this.prisma.customer.findUnique({
       where: { phone: dto.phone },

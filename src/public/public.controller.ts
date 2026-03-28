@@ -50,13 +50,17 @@ export class PublicController {
   }
 
   @Get('customers/search')
-  @ApiOperation({ summary: 'Public customer lookup by phone' })
-  async searchCustomerByPhone(@Query('phone') phone?: string) {
-    if (!phone?.trim()) {
-      throw new BadRequestException('Phone is required');
+  @ApiOperation({ summary: 'Public customer lookup by phone or email (q or phone)' })
+  async searchCustomer(
+    @Query('q') q?: string,
+    @Query('phone') phone?: string,
+  ) {
+    const lookup = (q ?? phone)?.trim();
+    if (!lookup) {
+      throw new BadRequestException('Phone or email is required');
     }
     try {
-      return await this.customersService.searchByPhone(phone.trim());
+      return await this.customersService.searchByPhoneOrEmail(lookup);
     } catch (error) {
       if (error instanceof NotFoundException) {
         return null;

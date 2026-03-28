@@ -67,7 +67,14 @@ export class ProductsService {
     });
   }
 
-  async findAll(page = 1, limit = 10, categoryId?: number, available?: boolean, search?: string) {
+  async findAll(
+    page = 1,
+    limit = 10,
+    categoryId?: number,
+    available?: boolean,
+    search?: string,
+    updatedAfter?: string,
+  ) {
     const skip = (page - 1) * limit;
     const where: Record<string, unknown> = {};
     if (categoryId) where.category_id = categoryId;
@@ -77,6 +84,12 @@ export class ProductsService {
         { name: { contains: search.trim(), mode: 'insensitive' } },
         { description: { contains: search.trim(), mode: 'insensitive' } },
       ];
+    }
+    if (updatedAfter?.trim()) {
+      const date = new Date(updatedAfter);
+      if (!Number.isNaN(date.getTime())) {
+        where.updated_at = { gte: date };
+      }
     }
 
     const [data, total] = await this.prisma.$transaction([

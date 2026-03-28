@@ -9,7 +9,7 @@ import { ProductsModule } from './products/products.module';
 import { CustomersModule } from './customers/customers.module';
 import { OrdersModule } from './orders/orders.module';
 import { DeliveryModule } from './delivery/delivery.module';
-import { HeldOrdersModule } from './held-orders/held-orders.module';
+import { HeldOrdersModule } from './held-orders/held-orders.module'; 
 import { TransactionsModule } from './transactions/transactions.module';
 import { LoyaltyModule } from './loyalty/loyalty.module';
 import { InventoryModule } from './inventory/inventory.module';

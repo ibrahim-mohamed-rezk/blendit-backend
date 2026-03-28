@@ -69,9 +69,11 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   // ── Listeners on internal events (from OrdersService / DeliveryService) ──
 
   @OnEvent('order.created')
-  handleOrderCreated(order: any) {
-    this.server.to('pos').emit('new_order', order);
-    this.server.to('kitchen').emit('new_order', order);
+  handleOrderCreated(payload: { order: any; source: 'POS' | 'PUBLIC' }) {
+    const { order, source } = payload;
+    const posPayload = { ...order, order_source: source };
+    this.server.to('pos').emit('new_order', posPayload);
+    this.server.to('kitchen').emit('new_order', posPayload);
     // Customer display update
     this.server.to('customer-display').emit('customer_display_update', {
       order_number: order.order_number,

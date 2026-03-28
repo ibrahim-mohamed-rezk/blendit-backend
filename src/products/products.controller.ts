@@ -132,6 +132,7 @@ export class ProductsController {
       query.categoryId,
       query.available,
       query.search,
+      query.updatedAfter,
     );
   }
 

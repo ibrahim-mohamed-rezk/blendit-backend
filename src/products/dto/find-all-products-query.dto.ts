@@ -33,4 +33,9 @@ export class FindAllProductsQueryDto {
   @IsOptional()
   @IsString()
   search?: string;
+
+  @ApiPropertyOptional({ description: 'Return products updated at/after ISO datetime' })
+  @IsOptional()
+  @IsString()
+  updatedAfter?: string;
 }

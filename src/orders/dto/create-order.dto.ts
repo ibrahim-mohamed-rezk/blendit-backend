@@ -59,7 +59,10 @@ export class CreateOrderDto {
   @IsInt()
   loyalty_points_redeemed?: number;
 
-  @ApiProperty({ enum: ['CASH', 'CARD', 'WALLET'] })
+  @ApiProperty({
+    enum: ['CASH', 'CARD', 'WALLET'],
+    description: 'WALLET is displayed as Instapay in POS and website; value remains WALLET in API/DB.',
+  })
   @IsString()
   @IsNotEmpty()
   payment_method: string;
@@ -73,4 +76,9 @@ export class CreateOrderDto {
   @IsOptional()
   @IsString()
   delivery_notes?: string;
+
+  @ApiPropertyOptional({ description: 'Client-generated id for offline-first order tracking' })
+  @IsOptional()
+  @IsString()
+  client_order_id?: string;
 }

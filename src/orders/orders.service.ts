@@ -6,7 +6,7 @@ import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { RefundOrderDto } from './dto/refund-order.dto';
-import { OrderStatus, PaymentMethod, TransactionStatus } from '@prisma/client';
+import { LoyaltyTxnType, OrderStatus, PaymentMethod, TransactionStatus } from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
 const DEFAULT_TAX_RATE = 0.15; // 15% – used when store taxRate is missing
@@ -161,8 +161,8 @@ export class OrdersService {
         });
       }
 
-      // 7. Award loyalty points on purchase (using store loyalty settings)
-      if (dto.customer_id) {
+      // 7. Award loyalty points on purchase (POS immediately; website defers until fulfilment — see tryAwardDeferredLoyaltyPoints)
+      if (dto.customer_id && source !== 'PUBLIC') {
         const pointsEarned = Math.floor(total * pointsPerCurrency);
         await tx.loyaltyAccount.upsert({
           where: { customer_id: dto.customer_id },
@@ -217,11 +217,73 @@ export class OrdersService {
       action: 'create_order',
       entity: 'Order',
       entity_id: order.id,
-      metadata: { order_number: order.order_number, total: order.total },
+      metadata: {
+        order_number: order.order_number,
+        total: order.total,
+        client_order_id: dto.client_order_id,
+      },
     });
-    this.eventEmitter.emit('order.created', order);
+    this.eventEmitter.emit('order.created', { order, source });
 
     return order;
+  }
+
+  /**
+   * Website orders skip EARNED at checkout. Award once when delivery is out for delivery or completed,
+   * or when the order is marked completed (idempotent via existing EARNED txn).
+   */
+  async tryAwardDeferredLoyaltyPoints(orderId: number): Promise<void> {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: { id: true, customer_id: true, total: true, status: true },
+    });
+    if (!order?.customer_id) return;
+    if (order.status === OrderStatus.CANCELLED || order.status === OrderStatus.REFUNDED) return;
+
+    const existingEarned = await this.prisma.loyaltyTransaction.findFirst({
+      where: { related_order_id: orderId, type: LoyaltyTxnType.EARNED },
+    });
+    if (existingEarned) return;
+
+    const loyaltySettings = await this.settingsService.getLoyalty();
+    const pointsPerCurrencyRaw = Number(loyaltySettings?.pointsPerCurrency);
+    const pointsPerCurrency = Number.isFinite(pointsPerCurrencyRaw) && pointsPerCurrencyRaw > 0
+      ? pointsPerCurrencyRaw
+      : DEFAULT_POINTS_PER_CURRENCY;
+
+    const pointsEarned = Math.floor(order.total * pointsPerCurrency);
+    if (pointsEarned <= 0) return;
+
+    await this.prisma.$transaction(async (tx) => {
+      const dup = await tx.loyaltyTransaction.findFirst({
+        where: { related_order_id: orderId, type: LoyaltyTxnType.EARNED },
+      });
+      if (dup) return;
+
+      const o = await tx.order.findUnique({
+        where: { id: orderId },
+        select: { customer_id: true, total: true, status: true },
+      });
+      if (!o?.customer_id) return;
+      if (o.status === OrderStatus.CANCELLED || o.status === OrderStatus.REFUNDED) return;
+
+      const pts = Math.floor(o.total * pointsPerCurrency);
+      if (pts <= 0) return;
+
+      await tx.loyaltyAccount.upsert({
+        where: { customer_id: o.customer_id },
+        update: { points_balance: { increment: pts } },
+        create: { customer_id: o.customer_id, points_balance: pts },
+      });
+      await tx.loyaltyTransaction.create({
+        data: {
+          customer_id: o.customer_id,
+          points_change: pts,
+          type: LoyaltyTxnType.EARNED,
+          related_order_id: orderId,
+        },
+      });
+    });
   }
 
   async findAll(
@@ -292,6 +354,9 @@ export class OrdersService {
       data: { status: dto.status },
       include: { items: { include: { product: true } }, customer: true },
     });
+    if (dto.status === OrderStatus.COMPLETED) {
+      await this.tryAwardDeferredLoyaltyPoints(id);
+    }
     this.eventEmitter.emit('order.statusUpdated', updated);
     return updated;
   }
