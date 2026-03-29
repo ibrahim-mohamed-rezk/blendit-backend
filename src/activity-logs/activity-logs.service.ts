@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
 export interface CreateLogDto {
@@ -11,10 +11,20 @@ export interface CreateLogDto {
 
 @Injectable()
 export class ActivityLogsService {
+  private readonly logger = new Logger(ActivityLogsService.name);
+
   constructor(private prisma: PrismaService) {}
 
+  /** Best-effort: never fail the caller (e.g. login) if the table is missing or DB errors. */
   async create(dto: CreateLogDto) {
-    return this.prisma.activityLog.create({ data: dto });
+    try {
+      return await this.prisma.activityLog.create({ data: dto });
+    } catch (err) {
+      this.logger.warn(
+        `Activity log skipped (${dto.action}): ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
   }
 
   async findAll(page = 1, limit = 20, userId?: number, action?: string) {
