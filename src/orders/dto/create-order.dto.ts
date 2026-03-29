@@ -77,6 +77,11 @@ export class CreateOrderDto {
   @IsString()
   delivery_notes?: string;
 
+  @ApiPropertyOptional({ description: 'Customer / kitchen note for the whole order (e.g. website special instructions)' })
+  @IsOptional()
+  @IsString()
+  order_notes?: string;
+
   @ApiPropertyOptional({ description: 'Client-generated id for offline-first order tracking' })
   @IsOptional()
   @IsString()

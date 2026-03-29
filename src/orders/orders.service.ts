@@ -43,6 +43,14 @@ export class OrdersService {
     return fallback.id;
   }
 
+  /** Combine website order-level note with delivery-specific notes for queue / POS visibility. */
+  private combineOrderAndDeliveryNotes(orderNotes?: string, deliveryNotes?: string): string | undefined {
+    const o = orderNotes?.trim();
+    const d = deliveryNotes?.trim();
+    if (o && d) return `${o}\n\n${d}`;
+    return o || d || undefined;
+  }
+
   private async generateOrderNumber(): Promise<string> {
     const count = await this.prisma.order.count();
     const date = new Date();
@@ -88,11 +96,32 @@ export class OrdersService {
       });
     }
 
+    // 1b. Ensure customer_id exists before connect (avoids Prisma 500 on stale website sessions / DB resets)
+    let resolvedCustomerId: number | undefined;
+    if (dto.customer_id != null && Number.isFinite(Number(dto.customer_id))) {
+      const cid = Number(dto.customer_id);
+      const customerExists = await this.prisma.customer.findUnique({
+        where: { id: cid },
+        select: { id: true },
+      });
+      if (customerExists) {
+        resolvedCustomerId = cid;
+      } else if (source === 'PUBLIC') {
+        resolvedCustomerId = undefined;
+      } else {
+        throw new BadRequestException(`Customer #${cid} not found`);
+      }
+    }
+
+    if ((dto.loyalty_points_redeemed ?? 0) > 0 && resolvedCustomerId == null) {
+      throw new BadRequestException('Valid customer is required to redeem loyalty points');
+    }
+
     // 2. Apply loyalty redemption discount (using store loyalty settings)
     let loyaltyDiscount = 0;
-    if (dto.loyalty_points_redeemed && dto.loyalty_points_redeemed > 0 && dto.customer_id) {
+    if (dto.loyalty_points_redeemed && dto.loyalty_points_redeemed > 0 && resolvedCustomerId != null) {
       const account = await this.prisma.loyaltyAccount.findUnique({
-        where: { customer_id: dto.customer_id },
+        where: { customer_id: resolvedCustomerId },
       });
       if (!account) throw new BadRequestException('Customer has no loyalty account');
       if (account.points_balance < dto.loyalty_points_redeemed) {
@@ -120,10 +149,11 @@ export class OrdersService {
           tax,
           discount: totalDiscount,
           total,
+          notes: dto.order_notes?.trim() || undefined,
           customer:
-            dto.customer_id != null
+            resolvedCustomerId != null
               ? {
-                  connect: { id: dto.customer_id },
+                  connect: { id: resolvedCustomerId },
                 }
               : undefined,
           cashier: {
@@ -146,14 +176,14 @@ export class OrdersService {
       });
 
       // 6. Deduct loyalty points if redeemed
-      if (dto.loyalty_points_redeemed && dto.loyalty_points_redeemed > 0 && dto.customer_id) {
+      if (dto.loyalty_points_redeemed && dto.loyalty_points_redeemed > 0 && resolvedCustomerId != null) {
         await tx.loyaltyAccount.update({
-          where: { customer_id: dto.customer_id },
+          where: { customer_id: resolvedCustomerId },
           data: { points_balance: { decrement: dto.loyalty_points_redeemed } },
         });
         await tx.loyaltyTransaction.create({
           data: {
-            customer_id: dto.customer_id,
+            customer_id: resolvedCustomerId,
             points_change: -dto.loyalty_points_redeemed,
             type: 'REDEEMED',
             related_order_id: createdOrder.id,
@@ -162,16 +192,16 @@ export class OrdersService {
       }
 
       // 7. Award loyalty points on purchase (POS immediately; website defers until fulfilment — see tryAwardDeferredLoyaltyPoints)
-      if (dto.customer_id && source !== 'PUBLIC') {
+      if (resolvedCustomerId != null && source !== 'PUBLIC') {
         const pointsEarned = Math.floor(total * pointsPerCurrency);
         await tx.loyaltyAccount.upsert({
-          where: { customer_id: dto.customer_id },
+          where: { customer_id: resolvedCustomerId },
           update: { points_balance: { increment: pointsEarned } },
-          create: { customer_id: dto.customer_id, points_balance: pointsEarned },
+          create: { customer_id: resolvedCustomerId, points_balance: pointsEarned },
         });
         await tx.loyaltyTransaction.create({
           data: {
-            customer_id: dto.customer_id,
+            customer_id: resolvedCustomerId,
             points_change: pointsEarned,
             type: 'EARNED',
             related_order_id: createdOrder.id,
@@ -182,27 +212,28 @@ export class OrdersService {
       // 8. Create delivery order if type is DELIVERY.
       // For PUBLIC website orders, also mirror non-delivery orders into delivery queue
       // so POS delivery tab can track website incoming orders in one place.
-      if (dto.order_type === 'DELIVERY' && dto.customer_id && dto.delivery_address) {
+      if (dto.order_type === 'DELIVERY' && resolvedCustomerId != null && dto.delivery_address) {
         await tx.deliveryOrder.create({
           data: {
             order_id: createdOrder.id,
-            customer_id: dto.customer_id,
+            customer_id: resolvedCustomerId,
             address: dto.delivery_address,
-            notes: dto.delivery_notes,
+            notes: this.combineOrderAndDeliveryNotes(dto.order_notes, dto.delivery_notes),
             status: 'NEW',
           },
         });
       } else if (
         source === 'PUBLIC' &&
-        dto.customer_id &&
+        resolvedCustomerId != null &&
         dto.order_type !== 'DELIVERY'
       ) {
         await tx.deliveryOrder.create({
           data: {
             order_id: createdOrder.id,
-            customer_id: dto.customer_id,
+            customer_id: resolvedCustomerId,
             address: dto.delivery_address?.trim() || 'Website order (walk-in pickup)',
-            notes: dto.delivery_notes?.trim() || 'Source: WEBSITE',
+            notes:
+              this.combineOrderAndDeliveryNotes(dto.order_notes, dto.delivery_notes) ?? 'Source: WEBSITE',
             status: 'NEW',
           },
         });
