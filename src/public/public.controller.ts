@@ -69,8 +69,14 @@ export class PublicController {
     }
   }
 
+  @Post('customers/register')
+  @ApiOperation({ summary: 'Join club: create account only (fails if phone or email already in use)' })
+  async registerCustomer(@Body() dto: CreateCustomerDto) {
+    return this.customersService.register(dto);
+  }
+
   @Post('customers')
-  @ApiOperation({ summary: 'Public create or update customer by phone' })
+  @ApiOperation({ summary: 'Public create or update customer by phone (checkout / profile sync)' })
   async createCustomer(@Body() dto: CreateCustomerDto) {
     return this.customersService.upsertByPhone(dto);
   }

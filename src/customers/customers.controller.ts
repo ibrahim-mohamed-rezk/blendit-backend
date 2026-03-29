@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CustomersService } from './customers.service';
 import { CreateCustomerDto } from './dto/create-customer.dto';
@@ -34,5 +34,11 @@ export class CustomersController {
   @ApiOperation({ summary: 'Get customer by ID' })
   findOne(@Param('id', ParseIntPipe) id: number) {
     return this.customersService.findOne(id);
+  }
+
+  @Delete(':id')
+  @ApiOperation({ summary: 'Delete customer (orders remain; customer unlinked)' })
+  remove(@Param('id', ParseIntPipe) id: number) {
+    return this.customersService.remove(id);
   }
 }
