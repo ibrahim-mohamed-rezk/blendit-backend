@@ -71,6 +71,14 @@ export class CustomersService {
     return customer;
   }
 
+  /** Website OTP flow — no exception when missing. */
+  async findByPhoneOptional(phone: string) {
+    return this.prisma.customer.findUnique({
+      where: { phone: this.normalizePhone(phone) },
+      include: { loyaltyAccount: true },
+    });
+  }
+
   /** Website login: exact phone match, or case-insensitive email match. */
   async searchByPhoneOrEmail(lookup: string) {
     const trimmed = lookup.trim();

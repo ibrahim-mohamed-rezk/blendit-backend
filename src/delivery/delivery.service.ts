@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { DeliveryStatus, OrderStatus, Prisma } from '@prisma/client';
 import { UpdateDeliveryStatusDto, CreateDeliveryOrderDto, UpdateDeliveryOrderDto } from './dto/delivery.dto';
@@ -13,34 +13,36 @@ export class DeliveryService {
     private ordersService: OrdersService,
   ) {}
 
-  /** Keep `orders.status` aligned with delivery workflow (history, admin, analytics use Order). */
-  private deliveryStatusToOrderStatus(status: DeliveryStatus): OrderStatus {
-    switch (status) {
-      case DeliveryStatus.NEW:
-        return OrderStatus.PENDING;
-      case DeliveryStatus.ACCEPTED:
-        return OrderStatus.PREPARING;
-      case DeliveryStatus.PREPARING:
-        return OrderStatus.PREPARING;
-      case DeliveryStatus.READY:
-        return OrderStatus.READY;
-      case DeliveryStatus.OUT_FOR_DELIVERY:
-        return OrderStatus.READY;
-      case DeliveryStatus.COMPLETED:
-        return OrderStatus.COMPLETED;
-      case DeliveryStatus.CANCELLED:
-        return OrderStatus.CANCELLED;
-      default:
-        return OrderStatus.PENDING;
+  /** Map delivery row → `orders.status`: NEW → PENDING, COMPLETED → COMPLETED, CANCELLED cancels pending sale. */
+  private deliveryProgressToOrderStatus(
+    deliveryStatus: DeliveryStatus,
+    currentOrderStatus: OrderStatus,
+  ): OrderStatus | null {
+    if (currentOrderStatus === OrderStatus.CANCELLED) {
+      return null;
     }
+    if (deliveryStatus === DeliveryStatus.CANCELLED) {
+      if (currentOrderStatus === OrderStatus.PENDING) return OrderStatus.CANCELLED;
+      return null;
+    }
+    if (deliveryStatus === DeliveryStatus.COMPLETED) {
+      return OrderStatus.COMPLETED;
+    }
+    if (currentOrderStatus === OrderStatus.COMPLETED) {
+      return null;
+    }
+    return OrderStatus.PENDING;
   }
 
   private async syncLinkedOrderStatus(orderId: number, deliveryStatus: DeliveryStatus): Promise<void> {
-    const order = await this.prisma.order.findUnique({ where: { id: orderId } });
-    if (!order || order.status === OrderStatus.REFUNDED) return;
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: { id: true, status: true },
+    });
+    if (!order) return;
 
-    const nextStatus = this.deliveryStatusToOrderStatus(deliveryStatus);
-    if (order.status === nextStatus) return;
+    const nextStatus = this.deliveryProgressToOrderStatus(deliveryStatus, order.status);
+    if (nextStatus == null || order.status === nextStatus) return;
 
     const updated = await this.prisma.order.update({
       where: { id: orderId },
@@ -98,7 +100,19 @@ export class DeliveryService {
   }
 
   async updateStatus(id: number, dto: UpdateDeliveryStatusDto) {
-    await this.findOne(id);
+    const existing = await this.findOne(id);
+    const cur = existing.status as DeliveryStatus;
+    if (cur === DeliveryStatus.COMPLETED || cur === DeliveryStatus.CANCELLED) {
+      if (dto.status === cur) {
+        return await this.findOne(id);
+      }
+      throw new BadRequestException('This delivery is already completed or canceled');
+    }
+    if (cur === DeliveryStatus.NEW) {
+      if (dto.status !== DeliveryStatus.COMPLETED && dto.status !== DeliveryStatus.CANCELLED) {
+        throw new BadRequestException('From a new delivery, only complete or cancel is allowed');
+      }
+    }
     const updated = await this.prisma.deliveryOrder.update({
       where: { id },
       data: { status: dto.status },
@@ -107,10 +121,11 @@ export class DeliveryService {
 
     await this.syncLinkedOrderStatus(updated.order_id, dto.status);
 
-    if (
-      dto.status === DeliveryStatus.OUT_FOR_DELIVERY ||
-      dto.status === DeliveryStatus.COMPLETED
-    ) {
+    const refreshed = await this.prisma.order.findUnique({
+      where: { id: updated.order_id },
+      select: { status: true },
+    });
+    if (refreshed?.status === OrderStatus.COMPLETED) {
       await this.ordersService.tryAwardDeferredLoyaltyPoints(updated.order_id);
     }
 

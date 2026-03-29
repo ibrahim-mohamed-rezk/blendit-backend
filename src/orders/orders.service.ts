@@ -6,7 +6,7 @@ import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { RefundOrderDto } from './dto/refund-order.dto';
-import { LoyaltyTxnType, OrderStatus, PaymentMethod, TransactionStatus } from '@prisma/client';
+import { LoyaltyTxnType, OrderChannel, OrderStatus, OrderType, PaymentMethod, TransactionStatus } from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
 const DEFAULT_TAX_RATE = 0.15; // 15% – used when store taxRate is missing
@@ -137,6 +137,10 @@ export class OrdersService {
     const tax = discountedSubtotal * taxRate;
     const total = discountedSubtotal + tax;
 
+    const isPosDeliveryCheckout = source === 'POS' && dto.order_type === OrderType.DELIVERY;
+    const initialOrderStatus =
+      source === 'PUBLIC' || isPosDeliveryCheckout ? OrderStatus.PENDING : OrderStatus.COMPLETED;
+
     // 4. Create order in a transaction
     const order = await this.prisma.$transaction(async (tx) => {
       const orderNumber = await this.generateOrderNumber();
@@ -144,7 +148,8 @@ export class OrdersService {
         data: {
           order_number: orderNumber,
           order_type: dto.order_type,
-          status: OrderStatus.PENDING,
+          status: initialOrderStatus,
+          channel: source === 'PUBLIC' ? OrderChannel.WEBSITE : OrderChannel.POS,
           subtotal,
           tax,
           discount: totalDiscount,
@@ -191,8 +196,8 @@ export class OrdersService {
         });
       }
 
-      // 7. Award loyalty points on purchase (POS immediately; website defers until fulfilment — see tryAwardDeferredLoyaltyPoints)
-      if (resolvedCustomerId != null && source !== 'PUBLIC') {
+      // 7. Award loyalty points on purchase (POS non-delivery immediately; website & POS delivery defer — see tryAwardDeferredLoyaltyPoints)
+      if (resolvedCustomerId != null && initialOrderStatus === OrderStatus.COMPLETED) {
         const pointsEarned = Math.floor(total * pointsPerCurrency);
         await tx.loyaltyAccount.upsert({
           where: { customer_id: resolvedCustomerId },
@@ -269,7 +274,7 @@ export class OrdersService {
       select: { id: true, customer_id: true, total: true, status: true },
     });
     if (!order?.customer_id) return;
-    if (order.status === OrderStatus.CANCELLED || order.status === OrderStatus.REFUNDED) return;
+    if (order.status === OrderStatus.CANCELLED) return;
 
     const existingEarned = await this.prisma.loyaltyTransaction.findFirst({
       where: { related_order_id: orderId, type: LoyaltyTxnType.EARNED },
@@ -296,7 +301,7 @@ export class OrdersService {
         select: { customer_id: true, total: true, status: true },
       });
       if (!o?.customer_id) return;
-      if (o.status === OrderStatus.CANCELLED || o.status === OrderStatus.REFUNDED) return;
+      if (o.status === OrderStatus.CANCELLED) return;
 
       const pts = Math.floor(o.total * pointsPerCurrency);
       if (pts <= 0) return;
@@ -376,9 +381,8 @@ export class OrdersService {
 
   async updateStatus(id: number, dto: UpdateOrderStatusDto, user?: { role?: { name: string } }) {
     const order = await this.findOne(id);
-    const cashierEditableStatuses: OrderStatus[] = [OrderStatus.PENDING, OrderStatus.PREPARING, OrderStatus.READY];
-    if (user?.role?.name === 'CASHIER' && !cashierEditableStatuses.includes(order.status)) {
-      throw new ForbiddenException('Cashier can only update status of pending, preparing, or ready orders');
+    if (user?.role?.name === 'CASHIER' && order.status !== OrderStatus.PENDING) {
+      throw new ForbiddenException('Cashier can only update status of pending orders');
     }
     const updated = await this.prisma.order.update({
       where: { id },
@@ -394,9 +398,8 @@ export class OrdersService {
 
   async update(id: number, dto: UpdateOrderDto, user: { role?: { name: string } }) {
     const order = await this.findOne(id);
-    const cashierEditableStatuses: OrderStatus[] = [OrderStatus.PENDING, OrderStatus.PREPARING, OrderStatus.READY];
-    if (user?.role?.name === 'CASHIER' && !cashierEditableStatuses.includes(order.status)) {
-      throw new ForbiddenException('Cashier can only update pending, preparing, or ready orders');
+    if (user?.role?.name === 'CASHIER' && order.status !== OrderStatus.PENDING) {
+      throw new ForbiddenException('Cashier can only update pending orders');
     }
     if (!dto.items?.length) throw new BadRequestException('Order must have at least one item');
 
@@ -468,11 +471,11 @@ export class OrdersService {
       throw new BadRequestException('Order has no completed payment to refund');
     }
 
-    // Mark completed payments as refunded and set order status to REFUNDED
+    // Mark completed payments as refunded; order is canceled (same as manual cancel for reporting)
     const updated = await this.prisma.order.update({
       where: { id },
       data: {
-        status: OrderStatus.REFUNDED,
+        status: OrderStatus.CANCELLED,
         transactions: {
           updateMany: {
             where: { status: TransactionStatus.COMPLETED },

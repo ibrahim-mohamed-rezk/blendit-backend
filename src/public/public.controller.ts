@@ -15,6 +15,9 @@ import { OrdersService } from '../orders/orders.service';
 import { CreateCustomerDto } from '../customers/dto/create-customer.dto';
 import { LoyaltyGiftsService } from '../loyalty/loyalty-gifts.service';
 import { LoyaltyTiersService } from '../loyalty/loyalty-tiers.service';
+import { WebsitePhoneAuthService } from './website-phone-auth.service';
+import { SendPhoneOtpDto } from './dto/send-phone-otp.dto';
+import { VerifyPhoneOtpDto } from './dto/verify-phone-otp.dto';
 
 @ApiTags('Public')
 @Controller('public')
@@ -25,6 +28,7 @@ export class PublicController {
     private readonly ordersService: OrdersService,
     private readonly loyaltyGiftsService: LoyaltyGiftsService,
     private readonly loyaltyTiersService: LoyaltyTiersService,
+    private readonly websitePhoneAuthService: WebsitePhoneAuthService,
   ) {}
 
   @Get('menu')
@@ -47,6 +51,18 @@ export class PublicController {
       categories,
       products: products.data,
     };
+  }
+
+  @Post('auth/send-otp')
+  @ApiOperation({ summary: 'Website: send SMS OTP (fallback code 1111 if Twilio missing or fails)' })
+  sendPhoneOtp(@Body() dto: SendPhoneOtpDto) {
+    return this.websitePhoneAuthService.sendOtp(dto.phone);
+  }
+
+  @Post('auth/verify-otp')
+  @ApiOperation({ summary: 'Website: verify OTP — sign in or join with name + phone' })
+  verifyPhoneOtp(@Body() dto: VerifyPhoneOtpDto) {
+    return this.websitePhoneAuthService.verifyOtp(dto.phone, dto.code, dto.name);
   }
 
   @Get('customers/search')

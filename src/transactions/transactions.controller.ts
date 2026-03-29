@@ -1,8 +1,8 @@
 import { Controller, Get, Param, ParseIntPipe, Query, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { TransactionsService } from './transactions.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
-import { PaginationDto } from '../common/dto/pagination.dto';
+import { TransactionsQueryDto } from './dto/transactions-query.dto';
 
 @ApiTags('Transactions')
 @ApiBearerAuth()
@@ -12,10 +12,9 @@ export class TransactionsController {
   constructor(private readonly transactionsService: TransactionsService) {}
 
   @Get()
-  @ApiOperation({ summary: 'Get all transactions (paginated)' })
-  @ApiQuery({ name: 'paymentMethod', required: false })
-  findAll(@Query() pagination: PaginationDto, @Query('paymentMethod') paymentMethod?: string) {
-    return this.transactionsService.findAll(pagination.page, pagination.limit, paymentMethod);
+  @ApiOperation({ summary: 'Get transactions (paginated, filtered server-side)' })
+  findAll(@Query() query: TransactionsQueryDto) {
+    return this.transactionsService.findAll(query);
   }
 
   @Get(':id')

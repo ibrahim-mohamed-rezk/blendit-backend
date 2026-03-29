@@ -117,11 +117,13 @@ enum OrderType {
 
 enum OrderStatus {
   PENDING
-  PREPARING
-  READY
   COMPLETED
   CANCELLED
-  REFUNDED
+}
+
+enum OrderChannel {
+  POS
+  WEBSITE
 }
 
 model Order {
@@ -131,6 +133,7 @@ model Order {
   cashier_id   Int?
   order_type   OrderType
   status       OrderStatus @default(PENDING)
+  channel      OrderChannel?
   subtotal     Float
   tax          Float
   discount     Float       @default(0)
@@ -170,10 +173,6 @@ model OrderItem {
 
 enum DeliveryStatus {
   NEW
-  ACCEPTED
-  PREPARING
-  READY
-  OUT_FOR_DELIVERY
   COMPLETED
   CANCELLED
 }
@@ -398,4 +397,16 @@ model ActivityLog {
   user User @relation(fields: [user_id], references: [id])
 
   @@map("activity_logs")
+}
+
+/// Short-lived SMS OTP for website sign-in / join (not used by POS).
+model WebsiteOtpChallenge {
+  id         Int      @id @default(autoincrement())
+  phone      String
+  code       String
+  expires_at DateTime
+  created_at DateTime @default(now())
+
+  @@index([phone])
+  @@map("website_otp_challenges")
 }
