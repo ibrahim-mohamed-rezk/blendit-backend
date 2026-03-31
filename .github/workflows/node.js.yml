@@ -1,40 +1,57 @@
-
-name: Node.js CI
+name: Deploy Backend (NestJS + Prisma)
 
 on:
   push:
-    branches: [ "master" ]
+    branches: ["master"]
 
 jobs:
-  build:
-
+  deploy:
     runs-on: self-hosted
 
-    strategy:
-      matrix:
-        node-version: [18.19.1]
     env:
-      CLOUDINARY_API_KEY: ${{secrets.CLOUDINARY_API_KEY}}
-      CLOUDINARY_API_SECRET: ${{secrets.CLOUDINARY_API_SECRET}}
-      CLOUDINARY_CLOUD_NAME: ${{secrets.CLOUDINARY_CLOUD_NAME}}
-      SEED_ADMIN_PASSWORD: ${{secrets.SEED_ADMIN_PASSWORD}}
-      SEED_ADMIN_EMAIL: ${{secrets.SEED_ADMIN_EMAIL}}
-      PRISMA_CONNECT_ON_STARTUP: ${{secrets.PRISMA_CONNECT_ON_STARTUP}}
-      PORT: ${{secrets.PORT}}
-      JWT_EXPIRATION: ${{secrets.JWT_EXPIRATION}}
-      JWT_SECRET: ${{secrets.JWT_SECRET}}
-      DATABASE_URL: ${{secrets.DATABASE_URL}}
+      CLOUDINARY_API_KEY: ${{ secrets.CLOUDINARY_API_KEY }}
+      CLOUDINARY_API_SECRET: ${{ secrets.CLOUDINARY_API_SECRET }}
+      CLOUDINARY_CLOUD_NAME: ${{ secrets.CLOUDINARY_CLOUD_NAME }}
+      SEED_ADMIN_PASSWORD: ${{ secrets.SEED_ADMIN_PASSWORD }}
+      SEED_ADMIN_EMAIL: ${{ secrets.SEED_ADMIN_EMAIL }}
+      PRISMA_CONNECT_ON_STARTUP: ${{ secrets.PRISMA_CONNECT_ON_STARTUP }}
+      PORT: ${{ secrets.PORT }}
+      JWT_EXPIRATION: ${{ secrets.JWT_EXPIRATION }}
+      JWT_SECRET: ${{ secrets.JWT_SECRET }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
     steps:
-    - uses: actions/checkout@v4
-    - name: Use Node.js ${{ matrix.node-version }}
-      uses: actions/setup-node@v4
-      with:
-        node-version: ${{ matrix.node-version }}
-        cache: 'npm'
-    - run: npm ci
-    - run: npm run build --if-present
-    - name: Change Directory
-      run: cd /home/arxeg-brokers/actions-runner/_work/arx-brokers/arx-brokers
-    - name: Restart PM2
-      run: pm2 restart arx-brokers
-   
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18.19.1
+          cache: "npm"
+
+      - name: 📦 Install dependencies
+        run: npm ci
+
+      - name: ⚙️ Prisma Generate
+        run: npx prisma generate
+
+      - name: 🗄️ Run Migrations
+        run: npx prisma migrate deploy
+
+      - name: 🏗️ Build project
+        run: npm run build
+
+      - name: 🚀 Start or Restart PM2
+        run: |
+          pm2 describe blendit-backend > /dev/null 2>&1
+          if [ $? -eq 0 ]; then
+            echo "🔄 Restarting existing app..."
+            pm2 restart blendit-backend
+          else
+            echo "🚀 Starting new app..."
+            pm2 start dist/main.js --name blendit-backend
+          fi
+
+      - name: 💾 Save PM2 process
+        run: pm2 save
