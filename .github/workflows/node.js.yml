@@ -8,6 +8,18 @@ jobs:
   deploy:
     runs-on: self-hosted
 
+    env:
+      CLOUDINARY_API_KEY: ${{ secrets.CLOUDINARY_API_KEY }}
+      CLOUDINARY_API_SECRET: ${{ secrets.CLOUDINARY_API_SECRET }}
+      CLOUDINARY_CLOUD_NAME: ${{ secrets.CLOUDINARY_CLOUD_NAME }}
+      SEED_ADMIN_PASSWORD: ${{ secrets.SEED_ADMIN_PASSWORD }}
+      SEED_ADMIN_EMAIL: ${{ secrets.SEED_ADMIN_EMAIL }}
+      PRISMA_CONNECT_ON_STARTUP: ${{ secrets.PRISMA_CONNECT_ON_STARTUP }}
+      PORT: ${{ secrets.PORT }}
+      JWT_EXPIRATION: ${{ secrets.JWT_EXPIRATION }}
+      JWT_SECRET: ${{ secrets.JWT_SECRET }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
     steps:
       - name: 📥 Checkout code
         uses: actions/checkout@v4
