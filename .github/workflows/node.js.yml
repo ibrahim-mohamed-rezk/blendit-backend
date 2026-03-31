@@ -7,20 +7,17 @@ on:
 jobs:
   deploy:
     runs-on: self-hosted
-
-    - name: Create .env
-  run: |
-    echo "DATABASE_URL=${{ secrets.DATABASE_URL }}" > .env
-    echo "JWT_SECRET=${{ secrets.JWT_SECRET }}" >> .env
-    echo "PORT=${{ secrets.PORT }}" >> .env
-    echo "CLOUDINARY_API_KEY=${{ secrets.CLOUDINARY_API_KEY }}" >> .env
-    echo "CLOUDINARY_API_SECRET=${{ secrets.CLOUDINARY_API_SECRET }}" >> .env
-    echo "CLOUDINARY_CLOUD_NAME=${{ secrets.CLOUDINARY_CLOUD_NAME }}" >> .env
-    echo "SEED_ADMIN_PASSWORD=${{ secrets.SEED_ADMIN_PASSWORD }}" >> .env
-    echo "SEED_ADMIN_EMAIL=${{ secrets.SEED_ADMIN_EMAIL }}" >> .env
-    echo "PRISMA_CONNECT_ON_STARTUP=${{ secrets.PRISMA_CONNECT_ON_STARTUP }}" >> .env
-    echo "JWT_EXPIRATION=${{ secrets.JWT_EXPIRATION }}" >> .env
-
+    env:
+      CLOUDINARY_API_KEY: ${{ secrets.CLOUDINARY_API_KEY }}
+      CLOUDINARY_API_SECRET: ${{ secrets.CLOUDINARY_API_SECRET }}
+      CLOUDINARY_CLOUD_NAME: ${{ secrets.CLOUDINARY_CLOUD_NAME }}
+      SEED_ADMIN_PASSWORD: ${{ secrets.SEED_ADMIN_PASSWORD }}
+      SEED_ADMIN_EMAIL: ${{ secrets.SEED_ADMIN_EMAIL }}
+      PRISMA_CONNECT_ON_STARTUP: ${{ secrets.PRISMA_CONNECT_ON_STARTUP }}
+      PORT: ${{ secrets.PORT }}
+      JWT_EXPIRATION: ${{ secrets.JWT_EXPIRATION }}
+      JWT_SECRET: ${{ secrets.JWT_SECRET }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
     steps:
       - name: 📥 Checkout code
         uses: actions/checkout@v4
@@ -35,18 +32,18 @@ jobs:
         run: npm ci
 
       - name: Create .env
-        run: 
+        run: |
           echo "DATABASE_URL=${{ secrets.DATABASE_URL }}" > .env
           echo "JWT_SECRET=${{ secrets.JWT_SECRET }}" >> .env
           echo "PORT=${{ secrets.PORT }}" >> .env
           echo "CLOUDINARY_API_KEY=${{ secrets.CLOUDINARY_API_KEY }}" >> .env
-          echo "CLOUDINARY_API_SECRET= ${{ secrets.CLOUDINARY_API_SECRET }}" >> .env
-          echo "CLOUDINARY_CLOUD_NAME= ${{ secrets.CLOUDINARY_CLOUD_NAME }}" >> .env
-          echo "SEED_ADMIN_PASSWORD= ${{ secrets.SEED_ADMIN_PASSWORD }}" >> .env
-          echo "SEED_ADMIN_EMAIL =${{ secrets.SEED_ADMIN_EMAIL }}" >> .env
-          echo "PRISMA_CONNECT_ON_STARTUP= ${{ secrets.PRISMA_CONNECT_ON_STARTUP }}" >> .env
-          echo "JWT_EXPIRATION= ${{ secrets.JWT_EXPIRATION }}" >> .env
-          
+          echo "CLOUDINARY_API_SECRET=${{ secrets.CLOUDINARY_API_SECRET }}" >> .env
+          echo "CLOUDINARY_CLOUD_NAME=${{ secrets.CLOUDINARY_CLOUD_NAME }}" >> .env
+          echo "SEED_ADMIN_PASSWORD=${{ secrets.SEED_ADMIN_PASSWORD }}" >> .env
+          echo "SEED_ADMIN_EMAIL=${{ secrets.SEED_ADMIN_EMAIL }}" >> .env
+          echo "PRISMA_CONNECT_ON_STARTUP=${{ secrets.PRISMA_CONNECT_ON_STARTUP }}" >> .env
+          echo "JWT_EXPIRATION=${{ secrets.JWT_EXPIRATION }}" >> .env
+                  
 
       - name: ⚙️ Prisma Generate
         run: npx prisma generate
