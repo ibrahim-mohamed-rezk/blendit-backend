@@ -19,6 +19,7 @@ import { AnalyticsModule } from './analytics/analytics.module';
 import { PromotionsModule } from './promotions/promotions.module';
 import { SettingsModule } from './settings/settings.module';
 import { PublicModule } from './public/public.module';
+import { AddonsModule } from './addons/addons.module';
 
 @Module({
   imports: [
@@ -41,6 +42,7 @@ import { PublicModule } from './public/public.module';
     PromotionsModule,
     SettingsModule,
     PublicModule,
+    AddonsModule,
   ],
 })
 export class AppModule {}

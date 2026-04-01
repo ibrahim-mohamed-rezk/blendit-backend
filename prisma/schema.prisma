@@ -145,11 +145,40 @@ model Order {
   customer       Customer?       @relation(fields: [customer_id], references: [id])
   cashier        User?           @relation(fields: [cashier_id], references: [id])
   items          OrderItem[]
+  orderAddons    OrderAddon[]
   deliveryOrders DeliveryOrder[]
   transactions   Transaction[]
   loyaltyTxns    LoyaltyTransaction[] @relation("OrderToLoyaltyTxn")
 
   @@map("orders")
+}
+
+/// Optional extras (e.g. extra shot, reusable cup) — priced separately from products.
+model Addon {
+  id         Int      @id @default(autoincrement())
+  name       String
+  price      Float
+  is_active  Boolean  @default(true)
+  sort_order Int      @default(0)
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  orderAddons OrderAddon[]
+
+  @@map("addons")
+}
+
+model OrderAddon {
+  id         Int   @id @default(autoincrement())
+  order_id   Int
+  addon_id   Int
+  quantity   Int
+  unit_price Float
+
+  order Order @relation(fields: [order_id], references: [id], onDelete: Cascade)
+  addon Addon @relation(fields: [addon_id], references: [id], onDelete: Restrict)
+
+  @@map("order_addons")
 }
 
 model OrderItem {

@@ -7,5 +7,10 @@ export class RefundOrderDto {
   @IsString()
   @MaxLength(500)
   reason?: string;
+
+  @ApiPropertyOptional({ description: 'Manager PIN required for refunds (if configured).' })
+  @IsOptional()
+  @IsString()
+  manager_pin?: string;
 }
 

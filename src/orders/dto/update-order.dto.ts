@@ -9,7 +9,7 @@ import {
   IsString,
   ValidateNested,
 } from 'class-validator';
-import { OrderItemDto } from './create-order.dto';
+import { OrderAddonLineDto, OrderItemDto } from './create-order.dto';
 
 export class UpdateOrderDto {
   @ApiProperty({ type: [OrderItemDto], description: 'Replace all order items' })
@@ -26,5 +26,15 @@ export class UpdateOrderDto {
   @ApiPropertyOptional({ default: 0 })
   @IsOptional()
   @IsNumber()
-  discount?: number; 
+  discount?: number;
+
+  @ApiPropertyOptional({
+    type: [OrderAddonLineDto],
+    description: 'Replace order add-ons. Omit to leave existing add-ons unchanged.',
+  })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => OrderAddonLineDto)
+  order_addons?: OrderAddonLineDto[];
 }

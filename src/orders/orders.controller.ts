@@ -1,10 +1,22 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Post, Put, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  ParseIntPipe,
+  Patch,
+  Post,
+  Put,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { OrdersService } from './orders.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { RefundOrderDto } from './dto/refund-order.dto';
+import { AppendOrderNoteDto } from './dto/append-order-note.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { OrderStatus, OrderType } from '@prisma/client';
@@ -54,6 +66,12 @@ export class OrdersController {
   @ApiOperation({ summary: 'Get order by ID' })
   findOne(@Param('id', ParseIntPipe) id: number) {
     return this.ordersService.findOne(id);
+  }
+
+  @Patch(':id/notes')
+  @ApiOperation({ summary: 'Append to order notes (e.g. Instapay payer + reference)' })
+  appendNote(@Param('id', ParseIntPipe) id: number, @Body() dto: AppendOrderNoteDto) {
+    return this.ordersService.appendOrderNote(id, dto);
   }
 
   @Put(':id/status')

@@ -3,12 +3,15 @@ import { Type } from 'class-transformer';
 import {
   IsArray,
   IsEnum,
+  IsIn,
   IsInt,
   IsNotEmpty,
   IsNumber,
   IsObject,
   IsOptional,
   IsString,
+  Min,
+  ValidateIf,
   ValidateNested,
 } from 'class-validator';
 import { OrderType } from '@prisma/client';
@@ -31,6 +34,29 @@ export class OrderItemDto {
   @IsOptional()
   @IsObject()
   customizations?: Record<string, any>;
+}
+
+export class OrderAddonLineDto {
+  @ApiProperty()
+  @IsInt()
+  addon_id: number;
+
+  @ApiProperty({ minimum: 1 })
+  @IsInt()
+  @Min(1)
+  quantity: number;
+}
+
+/** POS split tender: at least two lines; amounts must sum to order total (within tolerance). */
+export class OrderPaymentLineDto {
+  @ApiProperty({ enum: ['CASH', 'CARD', 'WALLET'] })
+  @IsIn(['CASH', 'CARD', 'WALLET'])
+  payment_method: string;
+
+  @ApiProperty({ description: 'Amount for this tender' })
+  @IsNumber()
+  @Min(0.01)
+  amount: number;
 }
 
 export class CreateOrderDto {
@@ -59,13 +85,25 @@ export class CreateOrderDto {
   @IsInt()
   loyalty_points_redeemed?: number;
 
-  @ApiProperty({
+  @ApiPropertyOptional({
     enum: ['CASH', 'CARD', 'WALLET'],
-    description: 'WALLET is displayed as Instapay in POS and website; value remains WALLET in API/DB.',
+    description:
+      'Single tender. Omit when `payments` is set (split). WALLET is Instapay in POS/website.',
   })
+  @ValidateIf((o: CreateOrderDto) => !o.payments?.length)
   @IsString()
   @IsNotEmpty()
-  payment_method: string;
+  payment_method?: string;
+
+  @ApiPropertyOptional({
+    type: [OrderPaymentLineDto],
+    description: 'Split payment (POS). Min 2 lines; sum of amounts must equal order total.',
+  })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => OrderPaymentLineDto)
+  payments?: OrderPaymentLineDto[];
 
   @ApiPropertyOptional({ description: 'Notes for address (delivery orders)' })
   @IsOptional()
@@ -86,4 +124,11 @@ export class CreateOrderDto {
   @IsOptional()
   @IsString()
   client_order_id?: string;
+
+  @ApiPropertyOptional({ type: [OrderAddonLineDto], description: 'Optional order-level add-ons' })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => OrderAddonLineDto)
+  order_addons?: OrderAddonLineDto[];
 }

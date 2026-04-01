@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
+import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
 import { UpdateStoreSettingsDto } from './dto/update-store-settings.dto';
 import { UpdateLoyaltySettingsDto } from './dto/update-loyalty-settings.dto';
@@ -67,6 +68,37 @@ export class SettingsService {
     return row ? (row.value as Record<string, unknown>) : null;
   }
 
+  /** Raw merged store JSON (includes `managerPinHash` — never send to clients). */
+  private async getStoreMerged(): Promise<Record<string, unknown>> {
+    const store = await this.getByKey('store');
+    return { ...DEFAULT_STORE, ...(store ?? {}) };
+  }
+
+  /** Strips secret hash; exposes `hasManagerPin` for POS/admin UI. */
+  sanitizeStoreForClient(store: Record<string, unknown>): Record<string, unknown> {
+    const { managerPinHash, ...rest } = store;
+    const hash = managerPinHash as string | undefined;
+    return {
+      ...rest,
+      hasManagerPin: typeof hash === 'string' && hash.length > 0,
+    };
+  }
+
+  /** Returns true when no PIN is configured, or when the plain PIN matches the hash. */
+  async verifyManagerPin(plain: string | undefined): Promise<boolean> {
+    const store = await this.getStoreMerged();
+    const hash = store.managerPinHash as string | undefined;
+    if (!hash || String(hash).trim() === '') return true;
+    if (plain == null || String(plain).trim() === '') return false;
+    return bcrypt.compare(String(plain).trim(), hash);
+  }
+
+  async isManagerPinConfigured(): Promise<boolean> {
+    const store = await this.getStoreMerged();
+    const hash = store.managerPinHash as string | undefined;
+    return typeof hash === 'string' && hash.length > 0;
+  }
+
   private async setByKey(key: string, value: object): Promise<Record<string, unknown>> {
     const updated = await this.prisma.setting.upsert({
       where: { key },
@@ -77,19 +109,15 @@ export class SettingsService {
   }
 
   async getAll(): Promise<{ store: Record<string, unknown>; loyalty: Record<string, unknown> }> {
-    const [store, loyalty] = await Promise.all([
-      this.getByKey('store'),
-      this.getByKey('loyalty'),
-    ]);
+    const [storeMerged, loyalty] = await Promise.all([this.getStoreMerged(), this.getByKey('loyalty')]);
     return {
-      store: store ?? DEFAULT_STORE,
+      store: this.sanitizeStoreForClient(storeMerged),
       loyalty: loyalty ?? DEFAULT_LOYALTY,
     };
   }
 
   async getStore(): Promise<Record<string, unknown>> {
-    const store = await this.getByKey('store');
-    return store ?? DEFAULT_STORE;
+    return this.sanitizeStoreForClient(await this.getStoreMerged());
   }
 
   async getLoyalty(): Promise<Record<string, unknown>> {
@@ -98,9 +126,21 @@ export class SettingsService {
   }
 
   async updateStore(dto: UpdateStoreSettingsDto): Promise<Record<string, unknown>> {
-    const current = await this.getStore();
+    const current = await this.getStoreMerged();
     const patch = this.pickDefinedStorePatch(dto);
     const merged: Record<string, unknown> = { ...current, ...patch };
+
+    if (dto.managerPin !== undefined) {
+      const p = String(dto.managerPin).trim();
+      if (p === '') {
+        merged.managerPinHash = '';
+      } else {
+        if (p.length < 4) {
+          throw new BadRequestException('Manager PIN must be at least 4 characters');
+        }
+        merged.managerPinHash = await bcrypt.hash(p, 10);
+      }
+    }
 
     if (patch.customerDisplayVideoUrl !== undefined) {
       const nextUrl = String(patch.customerDisplayVideoUrl).trim();
@@ -118,7 +158,8 @@ export class SettingsService {
       merged.customerDisplayVideoUrl = '';
     }
 
-    return this.setByKey('store', merged);
+    const saved = await this.setByKey('store', merged);
+    return this.sanitizeStoreForClient(saved as Record<string, unknown>);
   }
 
   /** Public payload for `/display` — no secrets */
@@ -142,12 +183,13 @@ export class SettingsService {
   }
 
   async setCustomerDisplayVideoCloudUrl(url: string): Promise<Record<string, unknown>> {
-    const current = await this.getStore();
-    return this.setByKey('store', {
+    const current = await this.getStoreMerged();
+    const saved = await this.setByKey('store', {
       ...current,
       customerDisplayVideoPath: '',
       customerDisplayVideoUrl: url.trim(),
     });
+    return this.sanitizeStoreForClient(saved as Record<string, unknown>);
   }
 
   async updateLoyalty(dto: UpdateLoyaltySettingsDto): Promise<Record<string, unknown>> {

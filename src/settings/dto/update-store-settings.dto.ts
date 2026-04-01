@@ -78,4 +78,10 @@ export class UpdateStoreSettingsDto {
   @IsOptional()
   @IsString()
   customerDisplayTagline?: string;
+
+  /** Set or clear POS manager PIN (min 4 chars). Send empty string to remove. Hashed server-side; never returned in GET. */
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  managerPin?: string;
 }

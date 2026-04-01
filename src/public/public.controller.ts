@@ -18,6 +18,7 @@ import { LoyaltyTiersService } from '../loyalty/loyalty-tiers.service';
 import { WebsitePhoneAuthService } from './website-phone-auth.service';
 import { SendPhoneOtpDto } from './dto/send-phone-otp.dto';
 import { VerifyPhoneOtpDto } from './dto/verify-phone-otp.dto';
+import { AddonsService } from '../addons/addons.service';
 
 @ApiTags('Public')
 @Controller('public')
@@ -29,7 +30,14 @@ export class PublicController {
     private readonly loyaltyGiftsService: LoyaltyGiftsService,
     private readonly loyaltyTiersService: LoyaltyTiersService,
     private readonly websitePhoneAuthService: WebsitePhoneAuthService,
+    private readonly addonsService: AddonsService,
   ) {}
+
+  @Get('addons')
+  @ApiOperation({ summary: 'Active add-ons for website checkout / POS' })
+  getPublicAddons() {
+    return this.addonsService.findAllActive();
+  }
 
   @Get('menu')
   @ApiOperation({ summary: 'Public menu: categories + available products' })

@@ -6,12 +6,12 @@ import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { RefundOrderDto } from './dto/refund-order.dto';
+import { AppendOrderNoteDto } from './dto/append-order-note.dto';
 import { LoyaltyTxnType, OrderChannel, OrderStatus, OrderType, PaymentMethod, TransactionStatus } from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
 const DEFAULT_TAX_RATE = 0.15; // 15% – used when store taxRate is missing
-const DEFAULT_POINTS_PER_CURRENCY = 1;
-const DEFAULT_CURRENCY_VALUE_PER_POINT = 0.01;
+const LOYALTY_POINT_UNITS = 2; // 1 point = 2 stored units (supports 0.5 points with Int schema)
 
 @Injectable()
 export class OrdersService {
@@ -58,6 +58,57 @@ export class OrdersService {
     return `BLD-${dateStr}-${String(count + 1).padStart(4, '0')}`;
   }
 
+  private roundMoney(n: number): number {
+    return Math.round(n * 100) / 100;
+  }
+
+  /** Convert display points (e.g. 5, 10, 0.5) to stored integer units. */
+  private pointsToUnits(points: number): number {
+    const raw = Number(points);
+    if (!Number.isFinite(raw) || raw <= 0) return 0;
+    return Math.round(raw * LOYALTY_POINT_UNITS);
+  }
+
+  /** New loyalty earn rule: <100 EGP => 0.5 point, >=100 EGP => 1 point. */
+  private earnedPointsDisplay(total: number): number {
+    const t = Number(total);
+    if (!Number.isFinite(t) || t <= 0) return 0;
+    return t < 100 ? 0.5 : 1;
+  }
+
+  /** Build one or more payment lines; split mode requires ≥2 lines and sum ≈ order total. */
+  private resolvePaymentLines(
+    dto: CreateOrderDto,
+    orderTotal: number,
+  ): { payment_method: PaymentMethod; amount: number }[] {
+    const target = this.roundMoney(orderTotal);
+    if (dto.payments && dto.payments.length > 0) {
+      if (dto.payments.length < 2) {
+        throw new BadRequestException('Split payment requires at least two payment lines');
+      }
+      let sum = 0;
+      const lines: { payment_method: PaymentMethod; amount: number }[] = [];
+      for (const p of dto.payments) {
+        const amt = this.roundMoney(Number(p.amount));
+        if (!Number.isFinite(amt) || amt <= 0) {
+          throw new BadRequestException('Each split payment must be a positive amount');
+        }
+        sum = this.roundMoney(sum + amt);
+        lines.push({ payment_method: p.payment_method as PaymentMethod, amount: amt });
+      }
+      if (Math.abs(sum - target) > 0.02) {
+        throw new BadRequestException(
+          `Payment amounts (${sum.toFixed(2)}) must equal order total (${target.toFixed(2)})`,
+        );
+      }
+      return lines;
+    }
+    if (!dto.payment_method) {
+      throw new BadRequestException('payment_method is required when payments are not provided');
+    }
+    return [{ payment_method: dto.payment_method as PaymentMethod, amount: target }];
+  }
+
   async create(dto: CreateOrderDto, cashierId?: number, source: 'POS' | 'PUBLIC' = 'POS') {
     const resolvedCashierId = await this.resolveCashierId(cashierId);
     const [storeSettings, loyaltySettings] = await Promise.all([
@@ -67,14 +118,7 @@ export class OrdersService {
     const taxRateRaw = Number(storeSettings?.taxRate);
     const taxRatePct = Number.isFinite(taxRateRaw) ? taxRateRaw : 15;
     const taxRate = taxRatePct / 100;
-    const currencyValuePerPointRaw = Number(loyaltySettings?.currencyValuePerPoint);
-    const currencyValuePerPoint = Number.isFinite(currencyValuePerPointRaw)
-      ? currencyValuePerPointRaw
-      : DEFAULT_CURRENCY_VALUE_PER_POINT;
-    const pointsPerCurrencyRaw = Number(loyaltySettings?.pointsPerCurrency);
-    const pointsPerCurrency = Number.isFinite(pointsPerCurrencyRaw) && pointsPerCurrencyRaw > 0
-      ? pointsPerCurrencyRaw
-      : DEFAULT_POINTS_PER_CURRENCY;
+    void loyaltySettings;
 
     // 1. Validate and calculate items
     let subtotal = 0;
@@ -94,6 +138,25 @@ export class OrdersService {
         notes: item.notes,
         customizations: item.customizations || {},
       });
+    }
+
+    const mergedAddons = new Map<number, number>();
+    for (const line of dto.order_addons ?? []) {
+      const aid = Number(line.addon_id);
+      const q = Number(line.quantity);
+      if (!Number.isFinite(aid) || aid <= 0 || !Number.isFinite(q) || q < 1) {
+        throw new BadRequestException('Invalid add-on line');
+      }
+      mergedAddons.set(aid, (mergedAddons.get(aid) ?? 0) + q);
+    }
+
+    const orderAddonsCreate: { addon_id: number; quantity: number; unit_price: number }[] = [];
+    for (const [addonId, qty] of mergedAddons) {
+      const addon = await this.prisma.addon.findUnique({ where: { id: addonId } });
+      if (!addon) throw new NotFoundException(`Add-on #${addonId} not found`);
+      if (!addon.is_active) throw new BadRequestException(`Add-on "${addon.name}" is not available`);
+      subtotal += addon.price * qty;
+      orderAddonsCreate.push({ addon_id: addonId, quantity: qty, unit_price: addon.price });
     }
 
     // 1b. Ensure customer_id exists before connect (avoids Prisma 500 on stale website sessions / DB resets)
@@ -117,22 +180,28 @@ export class OrdersService {
       throw new BadRequestException('Valid customer is required to redeem loyalty points');
     }
 
-    // 2. Apply loyalty redemption discount (using store loyalty settings)
-    let loyaltyDiscount = 0;
+    // 2. Loyalty redeem rule (new): cashier redeems fixed tiers (5 or 10 points) for juice rewards.
+    // No currency discount is applied; reward is operationally handled by cashier choice in POS.
+    let loyaltyPointsToRedeemUnits = 0;
     if (dto.loyalty_points_redeemed && dto.loyalty_points_redeemed > 0 && resolvedCustomerId != null) {
+      if (dto.loyalty_points_redeemed !== 5 && dto.loyalty_points_redeemed !== 10) {
+        throw new BadRequestException('Loyalty redemption must be either 5 or 10 points');
+      }
       const account = await this.prisma.loyaltyAccount.findUnique({
         where: { customer_id: resolvedCustomerId },
       });
       if (!account) throw new BadRequestException('Customer has no loyalty account');
-      if (account.points_balance < dto.loyalty_points_redeemed) {
-        throw new BadRequestException(`Insufficient loyalty points. Balance: ${account.points_balance}`);
+      loyaltyPointsToRedeemUnits = this.pointsToUnits(dto.loyalty_points_redeemed);
+      if (account.points_balance < loyaltyPointsToRedeemUnits) {
+        throw new BadRequestException(
+          `Insufficient loyalty points. Balance: ${(account.points_balance / LOYALTY_POINT_UNITS).toFixed(1)}`,
+        );
       }
-      loyaltyDiscount = dto.loyalty_points_redeemed * currencyValuePerPoint;
     }
 
     // 3. Calculate totals (tax from store settings)
     const customDiscount = dto.discount || 0;
-    const totalDiscount = customDiscount + loyaltyDiscount;
+    const totalDiscount = customDiscount;
     const discountedSubtotal = Math.max(subtotal - totalDiscount, 0);
     const tax = discountedSubtotal * taxRate;
     const total = discountedSubtotal + tax;
@@ -165,31 +234,50 @@ export class OrdersService {
             connect: { id: resolvedCashierId },
           },
           items: { create: itemsData },
+          ...(orderAddonsCreate.length
+            ? {
+                orderAddons: {
+                  create: orderAddonsCreate.map((a) => ({
+                    addon_id: a.addon_id,
+                    quantity: a.quantity,
+                    unit_price: a.unit_price,
+                  })),
+                },
+              }
+            : {}),
         },
-        include: { items: { include: { product: true } }, customer: true, cashier: { include: { role: true } } },
+        include: {
+          items: { include: { product: true } },
+          orderAddons: { include: { addon: true } },
+          customer: true,
+          cashier: { include: { role: true } },
+        },
       });
 
-      // 5. Create transaction record
-      await tx.transaction.create({
-        data: {
-          order_id: createdOrder.id,
-          user_id: resolvedCashierId,
-          payment_method: dto.payment_method as PaymentMethod,
-          amount: total,
-          status: 'COMPLETED',
-        },
-      });
+      // 5. Create transaction record(s) — single tender or split payments
+      const paymentLines = this.resolvePaymentLines(dto, total);
+      for (const line of paymentLines) {
+        await tx.transaction.create({
+          data: {
+            order_id: createdOrder.id,
+            user_id: resolvedCashierId,
+            payment_method: line.payment_method,
+            amount: line.amount,
+            status: 'COMPLETED',
+          },
+        });
+      }
 
       // 6. Deduct loyalty points if redeemed
-      if (dto.loyalty_points_redeemed && dto.loyalty_points_redeemed > 0 && resolvedCustomerId != null) {
+      if (loyaltyPointsToRedeemUnits > 0 && resolvedCustomerId != null) {
         await tx.loyaltyAccount.update({
           where: { customer_id: resolvedCustomerId },
-          data: { points_balance: { decrement: dto.loyalty_points_redeemed } },
+          data: { points_balance: { decrement: loyaltyPointsToRedeemUnits } },
         });
         await tx.loyaltyTransaction.create({
           data: {
             customer_id: resolvedCustomerId,
-            points_change: -dto.loyalty_points_redeemed,
+            points_change: -loyaltyPointsToRedeemUnits,
             type: 'REDEEMED',
             related_order_id: createdOrder.id,
           },
@@ -198,7 +286,8 @@ export class OrdersService {
 
       // 7. Award loyalty points on purchase (POS non-delivery immediately; website & POS delivery defer — see tryAwardDeferredLoyaltyPoints)
       if (resolvedCustomerId != null && initialOrderStatus === OrderStatus.COMPLETED) {
-        const pointsEarned = Math.floor(total * pointsPerCurrency);
+        const pointsEarned = this.pointsToUnits(this.earnedPointsDisplay(total));
+        if (pointsEarned > 0) {
         await tx.loyaltyAccount.upsert({
           where: { customer_id: resolvedCustomerId },
           update: { points_balance: { increment: pointsEarned } },
@@ -212,6 +301,7 @@ export class OrdersService {
             related_order_id: createdOrder.id,
           },
         });
+        }
       }
 
       // 8. Create delivery order if type is DELIVERY.
@@ -281,13 +371,7 @@ export class OrdersService {
     });
     if (existingEarned) return;
 
-    const loyaltySettings = await this.settingsService.getLoyalty();
-    const pointsPerCurrencyRaw = Number(loyaltySettings?.pointsPerCurrency);
-    const pointsPerCurrency = Number.isFinite(pointsPerCurrencyRaw) && pointsPerCurrencyRaw > 0
-      ? pointsPerCurrencyRaw
-      : DEFAULT_POINTS_PER_CURRENCY;
-
-    const pointsEarned = Math.floor(order.total * pointsPerCurrency);
+    const pointsEarned = this.pointsToUnits(this.earnedPointsDisplay(order.total));
     if (pointsEarned <= 0) return;
 
     await this.prisma.$transaction(async (tx) => {
@@ -303,7 +387,7 @@ export class OrdersService {
       if (!o?.customer_id) return;
       if (o.status === OrderStatus.CANCELLED) return;
 
-      const pts = Math.floor(o.total * pointsPerCurrency);
+      const pts = this.pointsToUnits(this.earnedPointsDisplay(o.total));
       if (pts <= 0) return;
 
       await tx.loyaltyAccount.upsert({
@@ -353,6 +437,7 @@ export class OrdersService {
         where, skip, take: limit,
         include: {
           items: { include: { product: true } },
+          orderAddons: { include: { addon: true } },
           customer: true,
           transactions: true,
           deliveryOrders: true,
@@ -369,6 +454,7 @@ export class OrdersService {
       where: { id },
       include: {
         items: { include: { product: true } },
+        orderAddons: { include: { addon: true } },
         customer: true,
         cashier: { include: { role: true } },
         transactions: true,
@@ -379,14 +465,54 @@ export class OrdersService {
     return order;
   }
 
+  /** Append text to order-level notes (e.g. Instapay payer + ref after checkout). */
+  async appendOrderNote(id: number, dto: AppendOrderNoteDto) {
+    const order = await this.findOne(id);
+    const piece = dto.append_note.trim();
+    if (!piece) throw new BadRequestException('Note cannot be empty');
+    const prev = order.notes?.trim();
+    const next = prev ? `${prev}\n\n${piece}` : piece;
+    const updated = await this.prisma.order.update({
+      where: { id },
+      data: { notes: next },
+      include: {
+        items: { include: { product: true } },
+        orderAddons: { include: { addon: true } },
+        customer: true,
+        cashier: { include: { role: true } },
+        transactions: true,
+        deliveryOrders: true,
+      },
+    });
+    this.eventEmitter.emit('order.updated', updated);
+    return updated;
+  }
+
   async updateStatus(id: number, dto: UpdateOrderStatusDto, user?: { role?: { name: string } }) {
     const order = await this.findOne(id);
+    if (order.status === OrderStatus.CANCELLED) {
+      throw new BadRequestException('Cancelled/refunded orders cannot be changed again');
+    }
     if (user?.role?.name === 'CASHIER' && order.status !== OrderStatus.PENDING) {
       throw new ForbiddenException('Cashier can only update status of pending orders');
     }
+    const isPrivileged = user?.role?.name === 'ADMIN' || user?.role?.name === 'SUPER_ADMIN';
+    if (dto.status === OrderStatus.CANCELLED && !isPrivileged) {
+      const ok = await this.settingsService.verifyManagerPin(dto.manager_pin);
+      if (!ok) throw new ForbiddenException('Invalid manager PIN');
+    }
     const updated = await this.prisma.order.update({
       where: { id },
-      data: { status: dto.status },
+      data: {
+        status: dto.status,
+        ...(dto.status === OrderStatus.CANCELLED && dto.cancellation_reason?.trim()
+          ? {
+              notes: order.notes?.trim()
+                ? `${order.notes.trim()}\n\nCancellation reason: ${dto.cancellation_reason.trim()}`
+                : `Cancellation reason: ${dto.cancellation_reason.trim()}`,
+            }
+          : {}),
+      },
       include: { items: { include: { product: true } }, customer: true },
     });
     if (dto.status === OrderStatus.COMPLETED) {
@@ -425,6 +551,35 @@ export class OrdersService {
       });
     }
 
+    let addonSubtotal = 0;
+    const orderAddonsCreate: { addon_id: number; quantity: number; unit_price: number }[] = [];
+
+    if (dto.order_addons !== undefined) {
+      const mergedAddons = new Map<number, number>();
+      for (const line of dto.order_addons) {
+        const aid = Number(line.addon_id);
+        const q = Number(line.quantity);
+        if (!Number.isFinite(aid) || aid <= 0 || !Number.isFinite(q) || q < 1) {
+          throw new BadRequestException('Invalid add-on line');
+        }
+        mergedAddons.set(aid, (mergedAddons.get(aid) ?? 0) + q);
+      }
+      for (const [addonId, qty] of mergedAddons) {
+        const addon = await this.prisma.addon.findUnique({ where: { id: addonId } });
+        if (!addon) throw new NotFoundException(`Add-on #${addonId} not found`);
+        if (!addon.is_active) throw new BadRequestException(`Add-on "${addon.name}" is not available`);
+        addonSubtotal += addon.price * qty;
+        orderAddonsCreate.push({ addon_id: addonId, quantity: qty, unit_price: addon.price });
+      }
+    } else {
+      const existing = order.orderAddons ?? [];
+      for (const row of existing) {
+        addonSubtotal += row.unit_price * row.quantity;
+      }
+    }
+
+    subtotal += addonSubtotal;
+
     const discount = dto.discount ?? order.discount;
     const discountedSubtotal = Math.max(subtotal - discount, 0);
     const tax = discountedSubtotal * taxRate;
@@ -432,6 +587,9 @@ export class OrdersService {
 
     const updated = await this.prisma.$transaction(async (tx) => {
       await tx.orderItem.deleteMany({ where: { order_id: id } });
+      if (dto.order_addons !== undefined) {
+        await tx.orderAddon.deleteMany({ where: { order_id: id } });
+      }
       return tx.order.update({
         where: { id },
         data: {
@@ -446,8 +604,23 @@ export class OrdersService {
           tax,
           total,
           items: { create: itemsData },
+          ...(dto.order_addons !== undefined && orderAddonsCreate.length > 0
+            ? {
+                orderAddons: {
+                  create: orderAddonsCreate.map((a) => ({
+                    addon_id: a.addon_id,
+                    quantity: a.quantity,
+                    unit_price: a.unit_price,
+                  })),
+                },
+              }
+            : {}),
         },
-        include: { items: { include: { product: true } }, customer: true },
+        include: {
+          items: { include: { product: true } },
+          orderAddons: { include: { addon: true } },
+          customer: true,
+        },
       });
     });
 
@@ -469,6 +642,16 @@ export class OrdersService {
     const hasCompletedTxn = order.transactions?.some((t) => t.status === TransactionStatus.COMPLETED);
     if (!hasCompletedTxn) {
       throw new BadRequestException('Order has no completed payment to refund');
+    }
+    if (order.status === OrderStatus.CANCELLED || order.transactions?.some((t) => t.status === TransactionStatus.REFUNDED)) {
+      throw new BadRequestException('Cancelled/refunded orders cannot be changed again');
+    }
+    const isPrivileged = user?.role?.name === 'ADMIN' || user?.role?.name === 'SUPER_ADMIN';
+    if (!isPrivileged) {
+      const ok = await this.settingsService.verifyManagerPin(dto.manager_pin);
+      if (!ok) {
+        throw new ForbiddenException('Invalid manager PIN');
+      }
     }
 
     // Mark completed payments as refunded; order is canceled (same as manual cancel for reporting)
