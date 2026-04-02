@@ -12,6 +12,19 @@ export class LoyaltyGiftsService {
     return this.prisma.loyaltyGift.findMany({
       where,
       orderBy: { points_required: 'asc' },
+      include: {
+        giftProduct: {
+          select: {
+            id: true,
+            name: true,
+            description: true,
+            tagline: true,
+            price: true,
+            image_url: true,
+            is_available: true,
+          },
+        },
+      },
     });
   }
 
@@ -28,6 +41,7 @@ export class LoyaltyGiftsService {
         description: dto.description ?? null,
         points_required: dto.points_required,
         discount_value: dto.discount_value,
+        gift_product_id: dto.gift_product_id ?? null,
         is_active: dto.is_active ?? true,
       },
     });
@@ -42,6 +56,7 @@ export class LoyaltyGiftsService {
         ...(dto.description !== undefined && { description: dto.description }),
         ...(dto.points_required != null && { points_required: dto.points_required }),
         ...(dto.discount_value != null && { discount_value: dto.discount_value }),
+        ...(dto.gift_product_id !== undefined && { gift_product_id: dto.gift_product_id }),
         ...(dto.is_active !== undefined && { is_active: dto.is_active }),
       },
     });

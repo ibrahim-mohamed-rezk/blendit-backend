@@ -89,6 +89,8 @@ model Product {
   category   Category    @relation(fields: [category_id], references: [id])
   orderItems OrderItem[]
   favorites  CustomerFavorite[]
+  loyaltyGiftsAsReward LoyaltyGift[]
+  ordersLoyaltyFree  Order[]       @relation("OrderLoyaltyFreeProduct")
 
   @@map("products")
 }
@@ -138,12 +140,15 @@ model Order {
   tax          Float
   discount     Float       @default(0)
   total        Float
+  /// When set, one unit of this product was redeemed free; excluded from deferred loyalty earn.
+  loyalty_free_product_id Int?
   notes        String?
   created_at   DateTime    @default(now())
   updated_at   DateTime    @updatedAt
 
   customer       Customer?       @relation(fields: [customer_id], references: [id])
   cashier        User?           @relation(fields: [cashier_id], references: [id])
+  loyaltyFreeProduct Product?    @relation("OrderLoyaltyFreeProduct", fields: [loyalty_free_product_id], references: [id])
   items          OrderItem[]
   orderAddons    OrderAddon[]
   deliveryOrders DeliveryOrder[]
@@ -292,9 +297,13 @@ model LoyaltyGift {
   description      String?
   points_required  Int
   discount_value   Float    // EGP value when redeemed
+  /// Fixed free product; null = customer picks any menu product at checkout (website).
+  gift_product_id  Int?
   is_active        Boolean  @default(true)
   created_at       DateTime @default(now())
   updated_at       DateTime @updatedAt
+
+  giftProduct Product? @relation(fields: [gift_product_id], references: [id])
 
   @@map("loyalty_gifts")
 }

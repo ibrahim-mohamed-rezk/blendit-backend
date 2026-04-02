@@ -2,12 +2,27 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { NestExpressApplication } from '@nestjs/platform-express';
+import { ConfigService } from '@nestjs/config';
 import { AppModule } from './app.module';
+import { normalizeWapilotApiToken } from './public/wapilot-config.util';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  const configService = app.get(ConfigService);
+  const wapilotToken =
+    normalizeWapilotApiToken(configService.get<string>('WAPILOT_API_TOKEN')) ??
+    normalizeWapilotApiToken(configService.get<string>('WAPILOT_API_KEY'));
+  if (wapilotToken) {
+    console.log(
+      `✓ WAPILOT_API_TOKEN loaded (${wapilotToken.length} chars). Default send: POST api.wapilot.net/api/v2/{WAPILOT_INSTANCE_ID}/send-message + token header`,
+    );
+  } else {
+    console.warn(
+      '⚠ WAPILOT_API_TOKEN / WAPILOT_API_KEY missing — POST /public/auth/send-otp will return 503 until set in backend/.env.',
+    );
+  }
 
   // Global prefix
   app.setGlobalPrefix('api/v1');

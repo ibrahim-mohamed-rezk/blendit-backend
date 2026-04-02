@@ -16,11 +16,11 @@ export class AnalyticsController {
   @Get('daily-sales')
   @ApiOperation({ summary: 'Daily sales summary' })
   dailySales() {
-    return this.analyticsService.getSalesSummary('daily');
+    return this.analyticsService.getSalesSummary('daily');    
   }
 
   @Get('weekly-sales')
-  @ApiOperation({ summary: 'Weekly sales summary' })
+  @ApiOperation({ summary: 'Weekly sales summary' }) 
   weeklySales() {
     return this.analyticsService.getSalesSummary('weekly');
   }

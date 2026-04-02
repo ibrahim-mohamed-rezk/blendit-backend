@@ -22,6 +22,15 @@ export class CreateLoyaltyGiftDto {
   @Min(0)
   discount_value: number;
 
+  @ApiPropertyOptional({
+    description: 'Fixed free product id; omit or null so the customer picks any menu item (website)',
+    nullable: true,
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  gift_product_id?: number | null;
+
   @ApiPropertyOptional({ default: true })
   @IsOptional()
   @IsBoolean()

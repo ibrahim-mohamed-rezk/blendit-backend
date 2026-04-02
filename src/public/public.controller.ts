@@ -62,7 +62,9 @@ export class PublicController {
   }
 
   @Post('auth/send-otp')
-  @ApiOperation({ summary: 'Website: send SMS OTP (fallback code 1111 if Twilio missing or fails)' })
+  @ApiOperation({
+    summary: 'Website: send OTP via Wapilot WhatsApp (503 if not configured or provider fails)',
+  })
   sendPhoneOtp(@Body() dto: SendPhoneOtpDto) {
     return this.websitePhoneAuthService.sendOtp(dto.phone);
   }

@@ -69,11 +69,64 @@ export class OrdersService {
     return Math.round(raw * LOYALTY_POINT_UNITS);
   }
 
-  /** New loyalty earn rule: <100 EGP => 0.5 point, >=100 EGP => 1 point. */
-  private earnedPointsDisplay(total: number): number {
-    const t = Number(total);
-    if (!Number.isFinite(t) || t <= 0) return 0;
-    return t < 100 ? 0.5 : 1;
+  /** Loyalty earn rule per product unit: <100 EGP => 0.5 point, >=100 EGP => 1 point. */
+  private earnedPointsPerUnitDisplay(unitPrice: number): number {
+    const p = Number(unitPrice);
+    if (!Number.isFinite(p) || p <= 0) return 0;
+    return p < 100 ? 0.5 : 1;
+  }
+
+  /** Sum loyalty points per order items (quantity-aware), returned in storage units. */
+  private earnedPointsUnitsFromItems(items: Array<{ price: number; quantity: number }>): number {
+    let pointsDisplay = 0;
+    for (const item of items) {
+      const qty = Number(item.quantity);
+      if (!Number.isFinite(qty) || qty <= 0) continue;
+      pointsDisplay += this.earnedPointsPerUnitDisplay(item.price) * qty;
+    }
+    return this.pointsToUnits(pointsDisplay);
+  }
+
+  /** Earning after removing up to one free unit of a redeemed product (website gift). */
+  private earnedPointsUnitsFromLineItems(
+    items: Array<{ product_id: number; price: number; quantity: number }>,
+    excludeOneUnitOfProductId: number | null,
+  ): number {
+    if (!excludeOneUnitOfProductId) {
+      return this.earnedPointsUnitsFromItems(
+        items.map((i) => ({ price: i.price, quantity: i.quantity })),
+      );
+    }
+    let rem = 1;
+    const virtual: { price: number; quantity: number }[] = [];
+    for (const i of items) {
+      let q = Number(i.quantity);
+      if (!Number.isFinite(q) || q <= 0) continue;
+      if (rem > 0 && i.product_id === excludeOneUnitOfProductId) {
+        const take = Math.min(rem, q);
+        q -= take;
+        rem -= take;
+      }
+      if (q > 0) virtual.push({ price: i.price, quantity: q });
+    }
+    return this.earnedPointsUnitsFromItems(virtual);
+  }
+
+  /** One unit of `freeProductId` priced from order lines (server-side prices). */
+  private computeFreeProductDiscount(
+    itemsData: Array<{ product_id: number; quantity: number; price: number }>,
+    freeProductId: number,
+  ): number {
+    let remaining = 1;
+    let discount = 0;
+    for (const row of itemsData) {
+      if (row.product_id !== freeProductId) continue;
+      const q = Math.min(remaining, row.quantity);
+      discount += row.price * q;
+      remaining -= q;
+      if (remaining <= 0) break;
+    }
+    return this.roundMoney(discount);
   }
 
   /** Build one or more payment lines; split mode requires ≥2 lines and sum ≈ order total. */
@@ -180,18 +233,94 @@ export class OrdersService {
       throw new BadRequestException('Valid customer is required to redeem loyalty points');
     }
 
-    // 2. Loyalty redeem rule (new): cashier redeems fixed tiers (5 or 10 points) for juice rewards.
-    // No currency discount is applied; reward is operationally handled by cashier choice in POS.
+    if (dto.loyalty_gift_id != null && (!(dto.loyalty_points_redeemed && dto.loyalty_points_redeemed > 0))) {
+      throw new BadRequestException('loyalty_points_redeemed is required when loyalty_gift_id is set');
+    }
+    if (source === 'PUBLIC' && dto.loyalty_free_product_id != null && dto.loyalty_gift_id == null) {
+      throw new BadRequestException('loyalty_gift_id is required when loyalty_free_product_id is set');
+    }
+    if (source === 'POS' && dto.loyalty_free_product_id != null && dto.loyalty_gift_id == null) {
+      throw new BadRequestException('loyalty_free_product_id on POS requires loyalty_gift_id');
+    }
+
+    // 2. Loyalty redeem: POS catalog gift applies one free unit (same as website). Legacy 5/10 without gift_id = points only.
     let loyaltyPointsToRedeemUnits = 0;
+    let loyaltyFreeProductId: number | null = null;
+    let loyaltyFreeDiscount = 0;
+
     if (dto.loyalty_points_redeemed && dto.loyalty_points_redeemed > 0 && resolvedCustomerId != null) {
-      if (dto.loyalty_points_redeemed !== 5 && dto.loyalty_points_redeemed !== 10) {
-        throw new BadRequestException('Loyalty redemption must be either 5 or 10 points');
-      }
       const account = await this.prisma.loyaltyAccount.findUnique({
         where: { customer_id: resolvedCustomerId },
       });
       if (!account) throw new BadRequestException('Customer has no loyalty account');
-      loyaltyPointsToRedeemUnits = this.pointsToUnits(dto.loyalty_points_redeemed);
+
+      if (source === 'PUBLIC') {
+        if (dto.loyalty_gift_id == null) {
+          throw new BadRequestException('loyalty_gift_id is required for website loyalty redemption');
+        }
+        const gift = await this.prisma.loyaltyGift.findUnique({ where: { id: dto.loyalty_gift_id } });
+        if (!gift?.is_active) {
+          throw new BadRequestException('Loyalty reward is not available');
+        }
+        if (gift.points_required !== dto.loyalty_points_redeemed) {
+          throw new BadRequestException('Points do not match this reward');
+        }
+        const resolvedFreePid = gift.gift_product_id ?? dto.loyalty_free_product_id ?? null;
+        if (
+          gift.gift_product_id != null &&
+          dto.loyalty_free_product_id != null &&
+          dto.loyalty_free_product_id !== gift.gift_product_id
+        ) {
+          throw new BadRequestException('Free product does not match this reward');
+        }
+        if (resolvedFreePid == null) {
+          throw new BadRequestException(
+            'loyalty_free_product_id is required when the reward lets you choose any product',
+          );
+        }
+        loyaltyFreeDiscount = this.computeFreeProductDiscount(itemsData, resolvedFreePid);
+        if (loyaltyFreeDiscount <= 0) {
+          throw new BadRequestException('Add the free reward drink to your cart to checkout');
+        }
+        loyaltyFreeProductId = resolvedFreePid;
+        loyaltyPointsToRedeemUnits = this.pointsToUnits(dto.loyalty_points_redeemed);
+      } else {
+        if (dto.loyalty_gift_id != null) {
+          const gift = await this.prisma.loyaltyGift.findUnique({ where: { id: dto.loyalty_gift_id } });
+          if (!gift?.is_active) {
+            throw new BadRequestException('Loyalty reward is not available');
+          }
+          if (gift.points_required !== dto.loyalty_points_redeemed) {
+            throw new BadRequestException('Points do not match this reward');
+          }
+          const resolvedFreePid = gift.gift_product_id ?? dto.loyalty_free_product_id ?? null;
+          if (
+            gift.gift_product_id != null &&
+            dto.loyalty_free_product_id != null &&
+            dto.loyalty_free_product_id !== gift.gift_product_id
+          ) {
+            throw new BadRequestException('Free product does not match this reward');
+          }
+          if (resolvedFreePid == null) {
+            throw new BadRequestException(
+              'loyalty_free_product_id is required for this reward when no fixed product is configured',
+            );
+          }
+          loyaltyFreeDiscount = this.computeFreeProductDiscount(itemsData, resolvedFreePid);
+          if (loyaltyFreeDiscount <= 0) {
+            throw new BadRequestException('Add the free reward drink to the order');
+          }
+          loyaltyFreeProductId = resolvedFreePid;
+          loyaltyPointsToRedeemUnits = this.pointsToUnits(dto.loyalty_points_redeemed);
+        } else if (dto.loyalty_points_redeemed !== 5 && dto.loyalty_points_redeemed !== 10) {
+          throw new BadRequestException(
+            'Loyalty redemption must be either 5 or 10 points, or use loyalty_gift_id with a catalog reward',
+          );
+        } else {
+          loyaltyPointsToRedeemUnits = this.pointsToUnits(dto.loyalty_points_redeemed);
+        }
+      }
+
       if (account.points_balance < loyaltyPointsToRedeemUnits) {
         throw new BadRequestException(
           `Insufficient loyalty points. Balance: ${(account.points_balance / LOYALTY_POINT_UNITS).toFixed(1)}`,
@@ -201,7 +330,7 @@ export class OrdersService {
 
     // 3. Calculate totals (tax from store settings)
     const customDiscount = dto.discount || 0;
-    const totalDiscount = customDiscount;
+    const totalDiscount = this.roundMoney(customDiscount + loyaltyFreeDiscount);
     const discountedSubtotal = Math.max(subtotal - totalDiscount, 0);
     const tax = discountedSubtotal * taxRate;
     const total = discountedSubtotal + tax;
@@ -223,16 +352,10 @@ export class OrdersService {
           tax,
           discount: totalDiscount,
           total,
+          loyalty_free_product_id: loyaltyFreeProductId,
           notes: dto.order_notes?.trim() || undefined,
-          customer:
-            resolvedCustomerId != null
-              ? {
-                  connect: { id: resolvedCustomerId },
-                }
-              : undefined,
-          cashier: {
-            connect: { id: resolvedCashierId },
-          },
+          customer_id: resolvedCustomerId ?? null,
+          cashier_id: resolvedCashierId,
           items: { create: itemsData },
           ...(orderAddonsCreate.length
             ? {
@@ -286,7 +409,14 @@ export class OrdersService {
 
       // 7. Award loyalty points on purchase (POS non-delivery immediately; website & POS delivery defer — see tryAwardDeferredLoyaltyPoints)
       if (resolvedCustomerId != null && initialOrderStatus === OrderStatus.COMPLETED) {
-        const pointsEarned = this.pointsToUnits(this.earnedPointsDisplay(total));
+        const pointsEarned = this.earnedPointsUnitsFromLineItems(
+          itemsData.map((i) => ({
+            product_id: i.product_id,
+            price: Number(i.price),
+            quantity: Number(i.quantity),
+          })),
+          loyaltyFreeProductId,
+        );
         if (pointsEarned > 0) {
         await tx.loyaltyAccount.upsert({
           where: { customer_id: resolvedCustomerId },
@@ -361,7 +491,7 @@ export class OrdersService {
   async tryAwardDeferredLoyaltyPoints(orderId: number): Promise<void> {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
-      select: { id: true, customer_id: true, total: true, status: true },
+      select: { id: true, customer_id: true, total: true, status: true, loyalty_free_product_id: true },
     });
     if (!order?.customer_id) return;
     if (order.status === OrderStatus.CANCELLED) return;
@@ -371,7 +501,18 @@ export class OrdersService {
     });
     if (existingEarned) return;
 
-    const pointsEarned = this.pointsToUnits(this.earnedPointsDisplay(order.total));
+    const orderItems = await this.prisma.orderItem.findMany({
+      where: { order_id: orderId },
+      select: { product_id: true, price: true, quantity: true },
+    });
+    const pointsEarned = this.earnedPointsUnitsFromLineItems(
+      orderItems.map((i) => ({
+        product_id: i.product_id,
+        price: Number(i.price),
+        quantity: Number(i.quantity),
+      })),
+      order.loyalty_free_product_id,
+    );
     if (pointsEarned <= 0) return;
 
     await this.prisma.$transaction(async (tx) => {
@@ -382,12 +523,27 @@ export class OrdersService {
 
       const o = await tx.order.findUnique({
         where: { id: orderId },
-        select: { customer_id: true, total: true, status: true },
+        select: { customer_id: true, status: true },
       });
       if (!o?.customer_id) return;
       if (o.status === OrderStatus.CANCELLED) return;
 
-      const pts = this.pointsToUnits(this.earnedPointsDisplay(o.total));
+      const oi = await tx.orderItem.findMany({
+        where: { order_id: orderId },
+        select: { product_id: true, price: true, quantity: true },
+      });
+      const fullOrder = await tx.order.findUnique({
+        where: { id: orderId },
+        select: { loyalty_free_product_id: true },
+      });
+      const pts = this.earnedPointsUnitsFromLineItems(
+        oi.map((i) => ({
+          product_id: i.product_id,
+          price: Number(i.price),
+          quantity: Number(i.quantity),
+        })),
+        fullOrder?.loyalty_free_product_id ?? null,
+      );
       if (pts <= 0) return;
 
       await tx.loyaltyAccount.upsert({

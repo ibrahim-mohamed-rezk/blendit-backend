@@ -85,6 +85,19 @@ export class CreateOrderDto {
   @IsInt()
   loyalty_points_redeemed?: number;
 
+  @ApiPropertyOptional({ description: 'Website: loyalty gift id from catalog (required with redemption on public orders)' })
+  @IsOptional()
+  @IsInt()
+  loyalty_gift_id?: number;
+
+  @ApiPropertyOptional({
+    description:
+      'Free product id for the reward when the gift has no fixed product (website), or POS with loyalty_gift_id. Ignored if the gift defines gift_product_id.',
+  })
+  @IsOptional()
+  @IsInt()
+  loyalty_free_product_id?: number;
+
   @ApiPropertyOptional({
     enum: ['CASH', 'CARD', 'WALLET'],
     description:

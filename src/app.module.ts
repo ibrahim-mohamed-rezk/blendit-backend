@@ -1,6 +1,28 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { EventEmitterModule } from '@nestjs/event-emitter';
+import { existsSync } from 'fs';
+import { join, resolve } from 'path';
+
+/** Load .env from cwd or from backend/ when the shell cwd is the monorepo root. */
+function resolveEnvFilePaths(): string[] {
+  const candidates = [
+    join(process.cwd(), '.env'),
+    join(process.cwd(), 'backend', '.env'),
+    join(__dirname, '..', '.env'),
+    join(__dirname, '..', '..', '.env'),
+  ];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const p of candidates) {
+    if (!existsSync(p)) continue;
+    const key = resolve(p);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(p);
+  }
+  return out.length > 0 ? out : ['.env'];
+}
 
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './auth/auth.module';
@@ -23,7 +45,10 @@ import { AddonsModule } from './addons/addons.module';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({
+      isGlobal: true,
+      envFilePath: resolveEnvFilePaths(),
+    }),
     EventEmitterModule.forRoot(),
     PrismaModule,
     AuthModule,
