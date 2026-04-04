@@ -5,6 +5,7 @@ import { UpdateDeliveryStatusDto, CreateDeliveryOrderDto, UpdateDeliveryOrderDto
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
 
 @ApiTags('Delivery')
 @ApiBearerAuth()
@@ -38,8 +39,12 @@ export class DeliveryController {
 
   @Put(':id/status')
   @ApiOperation({ summary: 'Update delivery order status' })
-  updateStatus(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateDeliveryStatusDto) {
-    return this.deliveryService.updateStatus(id, dto);
+  updateStatus(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateDeliveryStatusDto,
+    @CurrentUser() user: { role?: { name: string } },
+  ) {
+    return this.deliveryService.updateStatus(id, dto, user);
   }
 
   @Put(':id')

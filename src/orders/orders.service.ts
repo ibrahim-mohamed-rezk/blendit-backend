@@ -7,7 +7,15 @@ import { UpdateOrderDto } from './dto/update-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { RefundOrderDto } from './dto/refund-order.dto';
 import { AppendOrderNoteDto } from './dto/append-order-note.dto';
-import { LoyaltyTxnType, OrderChannel, OrderStatus, OrderType, PaymentMethod, TransactionStatus } from '@prisma/client';
+import {
+  DeliveryStatus,
+  LoyaltyTxnType,
+  OrderChannel,
+  OrderStatus,
+  OrderType,
+  PaymentMethod,
+  TransactionStatus,
+} from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
 const DEFAULT_TAX_RATE = 0.15; // 15% – used when store taxRate is missing
@@ -21,6 +29,17 @@ export class OrdersService {
     private settingsService: SettingsService,
     private activityLogs: ActivityLogsService,
   ) {}
+
+  /** When a sale is canceled/refunded, keep POS delivery queue in sync with the same order. */
+  private async cancelLinkedDeliveryOrders(orderId: number): Promise<void> {
+    await this.prisma.deliveryOrder.updateMany({
+      where: {
+        order_id: orderId,
+        status: { not: DeliveryStatus.CANCELLED },
+      },
+      data: { status: DeliveryStatus.CANCELLED },
+    });
+  }
 
   private async resolveCashierId(inputCashierId?: number): Promise<number> {
     if (typeof inputCashierId === 'number' && Number.isFinite(inputCashierId)) {
@@ -62,6 +81,46 @@ export class OrdersService {
     return Math.round(n * 100) / 100;
   }
 
+  /** Parse `customizations` JSON from POS/website: `{ modifications: [{ type, label }] }`. */
+  private extractModificationsFromCustomizations(customizations: unknown): Array<{ type: string; label: string }> {
+    if (customizations == null || typeof customizations !== 'object') return [];
+    const o = customizations as Record<string, unknown>;
+    const m = o.modifications;
+    if (!Array.isArray(m)) return [];
+    const out: Array<{ type: string; label: string }> = [];
+    for (const row of m) {
+      if (!row || typeof row !== 'object') continue;
+      const r = row as Record<string, unknown>;
+      const type = String(r.type ?? '');
+      const label = String(r.label ?? '').trim();
+      if (!label) continue;
+      out.push({ type, label });
+    }
+    return out;
+  }
+
+  /** Sum catalog prices for selected modifications (server-side; do not trust client line totals). */
+  private customizationExtrasFromProductJson(customizationOptionsJson: unknown, customizations: unknown): number {
+    const raw = customizationOptionsJson;
+    const opts = Array.isArray(raw) ? raw : [];
+    const mods = this.extractModificationsFromCustomizations(customizations);
+    let sum = 0;
+    for (const m of mods) {
+      const match = opts.find(
+        (x: unknown) =>
+          x &&
+          typeof x === 'object' &&
+          String((x as Record<string, unknown>).type ?? '') === m.type &&
+          String((x as Record<string, unknown>).label ?? '').trim() === m.label,
+      ) as Record<string, unknown> | undefined;
+      if (match && match.price != null) {
+        const n = Number(match.price);
+        if (Number.isFinite(n) && n > 0) sum += n;
+      }
+    }
+    return this.roundMoney(sum);
+  }
+
   /** Convert display points (e.g. 5, 10, 0.5) to stored integer units. */
   private pointsToUnits(points: number): number {
     const raw = Number(points);
@@ -87,29 +146,35 @@ export class OrdersService {
     return this.pointsToUnits(pointsDisplay);
   }
 
+  /** Earning after removing one free unit per entry (same product id may repeat). */
+  private earnedPointsUnitsAfterFreeUnits(
+    items: Array<{ product_id: number; price: number; quantity: number }>,
+    excludeOneUnitPerProductId: number[],
+  ): number {
+    const virtual = items.map((i) => ({
+      product_id: i.product_id,
+      price: i.price,
+      quantity: i.quantity,
+    }));
+    for (const pid of excludeOneUnitPerProductId) {
+      const line = virtual.find((l) => l.product_id === pid && l.quantity > 0);
+      if (!line) continue;
+      line.quantity -= 1;
+    }
+    return this.earnedPointsUnitsFromItems(
+      virtual.filter((l) => l.quantity > 0).map((l) => ({ price: l.price, quantity: l.quantity })),
+    );
+  }
+
   /** Earning after removing up to one free unit of a redeemed product (website gift). */
   private earnedPointsUnitsFromLineItems(
     items: Array<{ product_id: number; price: number; quantity: number }>,
     excludeOneUnitOfProductId: number | null,
   ): number {
-    if (!excludeOneUnitOfProductId) {
-      return this.earnedPointsUnitsFromItems(
-        items.map((i) => ({ price: i.price, quantity: i.quantity })),
-      );
-    }
-    let rem = 1;
-    const virtual: { price: number; quantity: number }[] = [];
-    for (const i of items) {
-      let q = Number(i.quantity);
-      if (!Number.isFinite(q) || q <= 0) continue;
-      if (rem > 0 && i.product_id === excludeOneUnitOfProductId) {
-        const take = Math.min(rem, q);
-        q -= take;
-        rem -= take;
-      }
-      if (q > 0) virtual.push({ price: i.price, quantity: q });
-    }
-    return this.earnedPointsUnitsFromItems(virtual);
+    return this.earnedPointsUnitsAfterFreeUnits(
+      items,
+      excludeOneUnitOfProductId != null ? [excludeOneUnitOfProductId] : [],
+    );
   }
 
   /** One unit of `freeProductId` priced from order lines (server-side prices). */
@@ -125,6 +190,26 @@ export class OrdersService {
       discount += row.price * q;
       remaining -= q;
       if (remaining <= 0) break;
+    }
+    return this.roundMoney(discount);
+  }
+
+  /** One free unit per entry, in order (same product may appear multiple times). */
+  private computeSequentialFreeUnitsDiscount(
+    itemsData: Array<{ product_id: number; quantity: number; price: number }>,
+    freeProductIdsInOrder: number[],
+  ): number {
+    const lines = itemsData.map((r) => ({ ...r }));
+    let discount = 0;
+    for (const pid of freeProductIdsInOrder) {
+      const idx = lines.findIndex((l) => l.product_id === pid && l.quantity > 0);
+      if (idx < 0) {
+        throw new BadRequestException(
+          `Add each loyalty reward drink to the order (missing product #${pid})`,
+        );
+      }
+      discount += lines[idx].price;
+      lines[idx].quantity -= 1;
     }
     return this.roundMoney(discount);
   }
@@ -182,12 +267,14 @@ export class OrdersService {
       if (!product) throw new NotFoundException(`Product #${item.product_id} not found`);
       if (!product.is_available) throw new BadRequestException(`Product "${product.name}" is not available`);
 
-      const lineTotal = product.price * item.quantity;
+      const extras = this.customizationExtrasFromProductJson(product.customization_options, item.customizations);
+      const unitPrice = this.roundMoney(product.price + extras);
+      const lineTotal = unitPrice * item.quantity;
       subtotal += lineTotal;
       itemsData.push({
         product_id: item.product_id,
         quantity: item.quantity,
-        price: product.price,
+        price: unitPrice,
         notes: item.notes,
         customizations: item.customizations || {},
       });
@@ -232,23 +319,77 @@ export class OrdersService {
     if ((dto.loyalty_points_redeemed ?? 0) > 0 && resolvedCustomerId == null) {
       throw new BadRequestException('Valid customer is required to redeem loyalty points');
     }
+    if (dto.loyalty_pos_redemptions?.length && resolvedCustomerId == null) {
+      throw new BadRequestException('Valid customer is required to redeem loyalty points');
+    }
 
-    if (dto.loyalty_gift_id != null && (!(dto.loyalty_points_redeemed && dto.loyalty_points_redeemed > 0))) {
+    if (
+      dto.loyalty_gift_id != null &&
+      (!(dto.loyalty_points_redeemed && dto.loyalty_points_redeemed > 0)) &&
+      !(dto.loyalty_pos_redemptions?.length && source === 'POS')
+    ) {
       throw new BadRequestException('loyalty_points_redeemed is required when loyalty_gift_id is set');
     }
     if (source === 'PUBLIC' && dto.loyalty_free_product_id != null && dto.loyalty_gift_id == null) {
       throw new BadRequestException('loyalty_gift_id is required when loyalty_free_product_id is set');
     }
     if (source === 'POS' && dto.loyalty_free_product_id != null && dto.loyalty_gift_id == null) {
-      throw new BadRequestException('loyalty_free_product_id on POS requires loyalty_gift_id');
+      if (!dto.loyalty_pos_redemptions?.length) {
+        throw new BadRequestException('loyalty_free_product_id on POS requires loyalty_gift_id');
+      }
     }
 
-    // 2. Loyalty redeem: POS catalog gift applies one free unit (same as website). Legacy 5/10 without gift_id = points only.
+    // 2. Loyalty redeem: POS multi-gift (loyalty_pos_redemptions), single catalog gift, or legacy 5/10.
     let loyaltyPointsToRedeemUnits = 0;
     let loyaltyFreeProductId: number | null = null;
     let loyaltyFreeDiscount = 0;
+    let loyaltyFreeProductIdsForEarn: number[] = [];
 
-    if (dto.loyalty_points_redeemed && dto.loyalty_points_redeemed > 0 && resolvedCustomerId != null) {
+    const posMultiRedemptions =
+      source === 'POS' && dto.loyalty_pos_redemptions && dto.loyalty_pos_redemptions.length > 0;
+
+    if (posMultiRedemptions && resolvedCustomerId != null) {
+      const account = await this.prisma.loyaltyAccount.findUnique({
+        where: { customer_id: resolvedCustomerId },
+      });
+      if (!account) throw new BadRequestException('Customer has no loyalty account');
+
+      const freePids: number[] = [];
+      let pointsUnits = 0;
+
+      for (const line of dto.loyalty_pos_redemptions!) {
+        const gift = await this.prisma.loyaltyGift.findUnique({ where: { id: line.loyalty_gift_id } });
+        if (!gift?.is_active) {
+          throw new BadRequestException('Loyalty reward is not available');
+        }
+        const resolvedFreePid = gift.gift_product_id ?? line.loyalty_free_product_id ?? null;
+        if (
+          gift.gift_product_id != null &&
+          line.loyalty_free_product_id != null &&
+          line.loyalty_free_product_id !== gift.gift_product_id
+        ) {
+          throw new BadRequestException('Free product does not match this reward');
+        }
+        if (resolvedFreePid == null) {
+          throw new BadRequestException(
+            'loyalty_free_product_id is required for this reward when no fixed product is configured',
+          );
+        }
+        pointsUnits += this.pointsToUnits(gift.points_required);
+        freePids.push(resolvedFreePid);
+      }
+
+      loyaltyFreeDiscount = this.computeSequentialFreeUnitsDiscount(itemsData, freePids);
+      loyaltyPointsToRedeemUnits = pointsUnits;
+      loyaltyFreeProductIdsForEarn = freePids;
+      loyaltyFreeProductId = freePids[0] ?? null;
+
+      if (account.points_balance < loyaltyPointsToRedeemUnits) {
+        throw new BadRequestException(
+          `Insufficient loyalty points. Balance: ${(account.points_balance / LOYALTY_POINT_UNITS).toFixed(1)}`,
+        );
+      }
+    } else if (dto.loyalty_points_redeemed && dto.loyalty_points_redeemed > 0 && resolvedCustomerId != null) {
       const account = await this.prisma.loyaltyAccount.findUnique({
         where: { customer_id: resolvedCustomerId },
       });
@@ -284,6 +425,7 @@ export class OrdersService {
         }
         loyaltyFreeProductId = resolvedFreePid;
         loyaltyPointsToRedeemUnits = this.pointsToUnits(dto.loyalty_points_redeemed);
+        loyaltyFreeProductIdsForEarn = [resolvedFreePid];
       } else {
         if (dto.loyalty_gift_id != null) {
           const gift = await this.prisma.loyaltyGift.findUnique({ where: { id: dto.loyalty_gift_id } });
@@ -312,12 +454,14 @@ export class OrdersService {
           }
           loyaltyFreeProductId = resolvedFreePid;
           loyaltyPointsToRedeemUnits = this.pointsToUnits(dto.loyalty_points_redeemed);
+          loyaltyFreeProductIdsForEarn = [resolvedFreePid];
         } else if (dto.loyalty_points_redeemed !== 5 && dto.loyalty_points_redeemed !== 10) {
           throw new BadRequestException(
             'Loyalty redemption must be either 5 or 10 points, or use loyalty_gift_id with a catalog reward',
           );
         } else {
           loyaltyPointsToRedeemUnits = this.pointsToUnits(dto.loyalty_points_redeemed);
+          loyaltyFreeProductIdsForEarn = [];
         }
       }
 
@@ -409,13 +553,13 @@ export class OrdersService {
 
       // 7. Award loyalty points on purchase (POS non-delivery immediately; website & POS delivery defer — see tryAwardDeferredLoyaltyPoints)
       if (resolvedCustomerId != null && initialOrderStatus === OrderStatus.COMPLETED) {
-        const pointsEarned = this.earnedPointsUnitsFromLineItems(
+        const pointsEarned = this.earnedPointsUnitsAfterFreeUnits(
           itemsData.map((i) => ({
             product_id: i.product_id,
             price: Number(i.price),
             quantity: Number(i.quantity),
           })),
-          loyaltyFreeProductId,
+          loyaltyFreeProductIdsForEarn,
         );
         if (pointsEarned > 0) {
         await tx.loyaltyAccount.upsert({
@@ -652,8 +796,7 @@ export class OrdersService {
     if (user?.role?.name === 'CASHIER' && order.status !== OrderStatus.PENDING) {
       throw new ForbiddenException('Cashier can only update status of pending orders');
     }
-    const isPrivileged = user?.role?.name === 'ADMIN' || user?.role?.name === 'SUPER_ADMIN';
-    if (dto.status === OrderStatus.CANCELLED && !isPrivileged) {
+    if (dto.status === OrderStatus.CANCELLED) {
       const ok = await this.settingsService.verifyManagerPin(dto.manager_pin);
       if (!ok) throw new ForbiddenException('Invalid manager PIN');
     }
@@ -671,6 +814,9 @@ export class OrdersService {
       },
       include: { items: { include: { product: true } }, customer: true },
     });
+    if (dto.status === OrderStatus.CANCELLED) {
+      await this.cancelLinkedDeliveryOrders(id);
+    }
     if (dto.status === OrderStatus.COMPLETED) {
       await this.tryAwardDeferredLoyaltyPoints(id);
     }
@@ -696,12 +842,14 @@ export class OrdersService {
       const product = await this.prisma.product.findUnique({ where: { id: item.product_id } });
       if (!product) throw new NotFoundException(`Product #${item.product_id} not found`);
       if (!product.is_available) throw new BadRequestException(`Product "${product.name}" is not available`);
-      const lineTotal = product.price * item.quantity;
+      const extras = this.customizationExtrasFromProductJson(product.customization_options, item.customizations);
+      const unitPrice = this.roundMoney(product.price + extras);
+      const lineTotal = unitPrice * item.quantity;
       subtotal += lineTotal;
       itemsData.push({
         product_id: item.product_id,
         quantity: item.quantity,
-        price: product.price,
+        price: unitPrice,
         notes: item.notes,
         customizations: item.customizations || {},
       });
@@ -802,12 +950,9 @@ export class OrdersService {
     if (order.status === OrderStatus.CANCELLED || order.transactions?.some((t) => t.status === TransactionStatus.REFUNDED)) {
       throw new BadRequestException('Cancelled/refunded orders cannot be changed again');
     }
-    const isPrivileged = user?.role?.name === 'ADMIN' || user?.role?.name === 'SUPER_ADMIN';
-    if (!isPrivileged) {
-      const ok = await this.settingsService.verifyManagerPin(dto.manager_pin);
-      if (!ok) {
-        throw new ForbiddenException('Invalid manager PIN');
-      }
+    const ok = await this.settingsService.verifyManagerPin(dto.manager_pin);
+    if (!ok) {
+      throw new ForbiddenException('Invalid manager PIN');
     }
 
     // Mark completed payments as refunded; order is canceled (same as manual cancel for reporting)
@@ -829,6 +974,8 @@ export class OrdersService {
         deliveryOrders: true,
       },
     });
+
+    await this.cancelLinkedDeliveryOrders(id);
 
     await this.activityLogs.create({
       user_id: user.id,

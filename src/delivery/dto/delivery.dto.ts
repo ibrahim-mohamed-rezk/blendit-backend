@@ -1,6 +1,14 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsEnum, IsInt, IsNotEmpty, IsOptional, IsString, Min } from 'class-validator';
+import {
+  IsEnum,
+  IsInt,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  Min,
+  ValidateIf,
+} from 'class-validator';
 import { DeliveryStatus } from '@prisma/client';
 
 export class GetDeliveryOrdersQueryDto {
@@ -33,6 +41,17 @@ export class UpdateDeliveryStatusDto {
   @ApiProperty({ enum: DeliveryStatus })
   @IsEnum(DeliveryStatus)
   status: DeliveryStatus;
+
+  @ApiPropertyOptional({ description: 'Required when cancelling delivery (non-admin): manager PIN.' })
+  @IsOptional()
+  @IsString()
+  manager_pin?: string;
+
+  @ApiPropertyOptional({ description: 'Required when status is CANCELLED.' })
+  @ValidateIf((o: UpdateDeliveryStatusDto) => o.status === DeliveryStatus.CANCELLED)
+  @IsNotEmpty()
+  @IsString()
+  cancellation_reason?: string;
 }
 
 export class CreateDeliveryOrderDto {

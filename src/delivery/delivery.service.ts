@@ -1,9 +1,15 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { DeliveryStatus, OrderStatus, Prisma } from '@prisma/client';
 import { UpdateDeliveryStatusDto, CreateDeliveryOrderDto, UpdateDeliveryOrderDto } from './dto/delivery.dto';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { OrdersService } from '../orders/orders.service';
+import { SettingsService } from '../settings/settings.service';
 
 @Injectable()
 export class DeliveryService {
@@ -11,6 +17,7 @@ export class DeliveryService {
     private prisma: PrismaService,
     private eventEmitter: EventEmitter2,
     private ordersService: OrdersService,
+    private settingsService: SettingsService,
   ) {}
 
   /** Map delivery row → `orders.status`: NEW → PENDING, COMPLETED → COMPLETED, CANCELLED cancels pending sale. */
@@ -99,7 +106,25 @@ export class DeliveryService {
     return order;
   }
 
-  async updateStatus(id: number, dto: UpdateDeliveryStatusDto) {
+  private async appendLinkedOrderCancellationNote(orderId: number, reason: string): Promise<void> {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: { notes: true },
+    });
+    if (!order) return;
+    const piece = `Cancellation reason: ${reason}`;
+    const next = order.notes?.trim() ? `${order.notes.trim()}\n\n${piece}` : piece;
+    await this.prisma.order.update({
+      where: { id: orderId },
+      data: { notes: next },
+    });
+  }
+
+  async updateStatus(
+    id: number,
+    dto: UpdateDeliveryStatusDto,
+    user?: { role?: { name: string } },
+  ) {
     const existing = await this.findOne(id);
     const cur = existing.status as DeliveryStatus;
     if (cur === DeliveryStatus.COMPLETED || cur === DeliveryStatus.CANCELLED) {
@@ -113,11 +138,34 @@ export class DeliveryService {
         throw new BadRequestException('From a new delivery, only complete or cancel is allowed');
       }
     }
+
+    if (dto.status === DeliveryStatus.CANCELLED) {
+      if (!dto.cancellation_reason?.trim()) {
+        throw new BadRequestException('Cancellation reason is required');
+      }
+      const ok = await this.settingsService.verifyManagerPin(dto.manager_pin);
+      if (!ok) throw new ForbiddenException('Invalid manager PIN');
+    }
+
+    let deliveryNotes: string | undefined;
+    if (dto.status === DeliveryStatus.CANCELLED && dto.cancellation_reason?.trim()) {
+      const reason = dto.cancellation_reason.trim();
+      const prev = existing.notes?.trim();
+      deliveryNotes = prev ? `${prev}\n\nCancellation reason: ${reason}` : `Cancellation reason: ${reason}`;
+    }
+
     const updated = await this.prisma.deliveryOrder.update({
       where: { id },
-      data: { status: dto.status },
+      data: {
+        status: dto.status,
+        ...(deliveryNotes != null ? { notes: deliveryNotes } : {}),
+      },
       include: { order: true, customer: true },
     });
+
+    if (dto.status === DeliveryStatus.CANCELLED && dto.cancellation_reason?.trim()) {
+      await this.appendLinkedOrderCancellationNote(updated.order_id, dto.cancellation_reason.trim());
+    }
 
     await this.syncLinkedOrderStatus(updated.order_id, dto.status);
 

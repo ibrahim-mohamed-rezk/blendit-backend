@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsArray, IsBoolean, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, ValidateNested } from 'class-validator';
+import { IsArray, IsBoolean, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, Min, ValidateNested } from 'class-validator';
 
 export class CustomizationOptionDto {
   @ApiProperty({ example: 'custom_option' })
@@ -10,6 +10,12 @@ export class CustomizationOptionDto {
   @ApiProperty({ example: 'No sugar' })
   @IsString()
   label: string;
+
+  @ApiPropertyOptional({ example: 5, description: 'Extra charge (EGP) when this option is selected' })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  price?: number;
 }
 
 export class CreateProductDto {

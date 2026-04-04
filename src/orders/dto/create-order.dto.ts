@@ -47,6 +47,21 @@ export class OrderAddonLineDto {
   quantity: number;
 }
 
+/** One catalog redemption line (POS: multiple gifts in one order). */
+export class LoyaltyPosRedemptionDto {
+  @ApiProperty({ description: 'Loyalty gift catalog id' })
+  @IsInt()
+  loyalty_gift_id: number;
+
+  @ApiPropertyOptional({
+    description:
+      'Chosen free product when the gift has no fixed product; optional when gift defines gift_product_id.',
+  })
+  @IsOptional()
+  @IsInt()
+  loyalty_free_product_id?: number;
+}
+
 /** POS split tender: at least two lines; amounts must sum to order total (within tolerance). */
 export class OrderPaymentLineDto {
   @ApiProperty({ enum: ['CASH', 'CARD', 'WALLET'] })
@@ -84,6 +99,16 @@ export class CreateOrderDto {
   @IsOptional()
   @IsInt()
   loyalty_points_redeemed?: number;
+
+  @ApiPropertyOptional({
+    type: [LoyaltyPosRedemptionDto],
+    description: 'POS: multiple loyalty catalog redemptions in one order (one entry per free drink line).',
+  })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => LoyaltyPosRedemptionDto)
+  loyalty_pos_redemptions?: LoyaltyPosRedemptionDto[];
 
   @ApiPropertyOptional({ description: 'Website: loyalty gift id from catalog (required with redemption on public orders)' })
   @IsOptional()
