@@ -16,11 +16,13 @@ export class UsersService {
     if (!role) throw new BadRequestException(`Role #${dto.role_id} not found. Run: npx prisma db seed`);
 
     const password_hash = await bcrypt.hash(dto.password, 10);
+    const pin_hash = dto.pin?.trim() ? await bcrypt.hash(dto.pin.trim(), 10) : null;
     const data: Record<string, unknown> = {
       name: dto.name,
       email: dto.email,
       phone: dto.phone ?? null,
       password_hash,
+      pin_hash,
       role_id: Number(dto.role_id),
     };
     if (dto.page_access != null && Array.isArray(dto.page_access) && dto.page_access.length > 0) {
@@ -30,7 +32,7 @@ export class UsersService {
       data: data as Parameters<typeof this.prisma.user.create>[0]['data'],
       include: { role: true },
     });
-    const { password_hash: _, ...result } = user;
+    const { password_hash: _, pin_hash: __, ...result } = user;
     return result;
   }
 
@@ -45,7 +47,7 @@ export class UsersService {
       }),
       this.prisma.user.count(),
     ]);
-    return { data: data.map(({ password_hash, ...u }) => u), total, page, limit };
+    return { data: data.map(({ password_hash, pin_hash, ...u }) => u), total, page, limit };
   }
 
   async findOne(id: number) {
@@ -54,7 +56,7 @@ export class UsersService {
       include: { role: true },
     });
     if (!user) throw new NotFoundException(`User #${id} not found`);
-    const { password_hash, ...result } = user;
+    const { password_hash, pin_hash, ...result } = user;
     return result;
   }
 
@@ -65,6 +67,10 @@ export class UsersService {
       data.password_hash = await bcrypt.hash(dto.password, 10);
       delete data.password;
     }
+    if ('pin' in dto) {
+      data.pin_hash = dto.pin?.trim() ? await bcrypt.hash(dto.pin.trim(), 10) : null;
+      delete data.pin;
+    }
     if ('page_access' in dto) {
       data.page_access = dto.page_access ?? null;
     }
@@ -73,7 +79,7 @@ export class UsersService {
       data,
       include: { role: true },
     });
-    const { password_hash, ...result } = user;
+    const { password_hash, pin_hash, ...result } = user;
     return result;
   }
 

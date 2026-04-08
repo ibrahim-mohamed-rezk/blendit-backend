@@ -25,6 +25,7 @@ model User {
   email         String   @unique
   phone         String?
   password_hash String
+  pin_hash      String?
   role_id       Int
   is_active     Boolean  @default(true)
   page_access   Json?    // ["/admin/orders", "/admin/products", ...] - for ADMIN role

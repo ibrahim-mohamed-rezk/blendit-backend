@@ -5,6 +5,7 @@ import { ActivityLogsService } from '../activity-logs/activity-logs.service';
 import { LoginDto } from './dto/login.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { PosSwitchDto } from './dto/pos-switch.dto';
 
 @ApiTags('Auth')
 @Controller('auth')
@@ -37,5 +38,22 @@ export class AuthController {
   @ApiOperation({ summary: 'Get current authenticated user' })
   async getMe(@CurrentUser() user: any) {
     return this.authService.getMe(user.id);
+  }
+
+  @Get('pos-users')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'List active staff for POS quick switch' })
+  async getPosUsers() {
+    return this.authService.getPosSwitchUsers();
+  }
+
+  @Post('pos-switch')
+  @HttpCode(200)
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Switch active POS user by PIN' })
+  async posSwitch(@Body() dto: PosSwitchDto) {
+    return this.authService.posSwitch(dto);
   }
 }

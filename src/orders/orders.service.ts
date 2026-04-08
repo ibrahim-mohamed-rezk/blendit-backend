@@ -739,6 +739,7 @@ export class OrdersService {
           items: { include: { product: true } },
           orderAddons: { include: { addon: true } },
           customer: true,
+          cashier: { select: { id: true, name: true } },
           transactions: true,
           deliveryOrders: true,
         },
