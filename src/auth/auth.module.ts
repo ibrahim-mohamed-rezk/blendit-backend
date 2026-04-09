@@ -6,15 +6,19 @@ import { AuthController } from './auth.controller';
 import { JwtStrategy } from './jwt.strategy';
 import { PrismaModule } from '../prisma/prisma.module';
 import { ActivityLogsModule } from '../activity-logs/activity-logs.module';
+import { ConfigService } from '@nestjs/config';
 
 @Module({
   imports: [
     PrismaModule,
     ActivityLogsModule,
     PassportModule.register({ defaultStrategy: 'jwt' }),
-    JwtModule.register({
-      secret: process.env.JWT_SECRET || 'blendit-jwt-secret-change-me',
-      signOptions: { expiresIn: (process.env.JWT_EXPIRATION || '24h') as any },
+    JwtModule.registerAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => ({
+        secret: config.get<string>('JWT_SECRET') || 'blendit-jwt-secret-change-me',
+        signOptions: { expiresIn: (config.get<string>('JWT_EXPIRATION') || '24h') as any },
+      }),
     }),
   ],
   controllers: [AuthController],

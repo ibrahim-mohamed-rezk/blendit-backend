@@ -93,7 +93,7 @@ export class ProductsService {
     }
 
     const [data, total] = await this.prisma.$transaction([
-      this.prisma.product.findMany({ where, skip, take: limit, include: { category: true }, orderBy: { created_at: 'desc' } }),
+      this.prisma.product.findMany({ where, skip, take: limit, include: { category: true }, orderBy: { updated_at: 'desc' } }),
       this.prisma.product.count({ where }),
     ]);
     return { data, total, page, limit };
