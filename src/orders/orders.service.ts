@@ -41,25 +41,46 @@ export class OrdersService {
     });
   }
 
-  private async resolveCashierId(inputCashierId?: number): Promise<number> {
-    if (typeof inputCashierId === 'number' && Number.isFinite(inputCashierId)) {
-      const exists = await this.prisma.user.findUnique({ where: { id: inputCashierId } });
-      if (exists) return inputCashierId;
+  /** POS: cashier must be the authenticated JWT user — never guess another staff id (fixes wrong shift totals). */
+  private async resolvePosCashierId(cashierId?: number): Promise<number> {
+    if (typeof cashierId !== 'number' || !Number.isFinite(cashierId)) {
+      throw new BadRequestException('Authenticated cashier is required for POS orders');
     }
+    const u = await this.prisma.user.findUnique({
+      where: { id: cashierId },
+      include: { role: true },
+    });
+    if (!u?.is_active) {
+      throw new BadRequestException('Invalid or inactive user for POS order');
+    }
+    const roleName = u.role?.name;
+    if (roleName !== 'CASHIER' && roleName !== 'ADMIN' && roleName !== 'SUPER_ADMIN') {
+      throw new ForbiddenException('Only staff roles can create POS orders');
+    }
+    return u.id;
+  }
 
-    const fallback = await this.prisma.user.findFirst({
-      where: {
-        is_active: true,
-        role: { name: { in: ['CASHIER', 'ADMIN', 'SUPER_ADMIN'] } },
-      },
+  /**
+   * Website orders have no logged-in cashier; attribute to a real CASHIER first (not lowest-id SUPER_ADMIN),
+   * so POS shift reports for admins are not polluted by web checkouts.
+   */
+  private async resolvePublicWebsiteCashierId(): Promise<number> {
+    const cashier = await this.prisma.user.findFirst({
+      where: { is_active: true, role: { name: 'CASHIER' } },
       orderBy: { id: 'asc' },
     });
-
-    if (!fallback) {
-      throw new BadRequestException('No active cashier/admin user found to process this order');
-    }
-
-    return fallback.id;
+    if (cashier) return cashier.id;
+    const admin = await this.prisma.user.findFirst({
+      where: { is_active: true, role: { name: 'ADMIN' } },
+      orderBy: { id: 'asc' },
+    });
+    if (admin) return admin.id;
+    const superAdmin = await this.prisma.user.findFirst({
+      where: { is_active: true, role: { name: 'SUPER_ADMIN' } },
+      orderBy: { id: 'asc' },
+    });
+    if (superAdmin) return superAdmin.id;
+    throw new BadRequestException('No active staff user found to record website orders');
   }
 
   /** Combine website order-level note with delivery-specific notes for queue / POS visibility. */
@@ -79,6 +100,33 @@ export class OrdersService {
 
   private roundMoney(n: number): number {
     return Math.round(n * 100) / 100;
+  }
+
+  /**
+   * POS offline sync: preserve the device checkout time on the server (order + related rows).
+   * Ignored for public website orders. Bounded to reduce clock-abuse.
+   */
+  private resolvePosClientOrderTimestamps(
+    dto: CreateOrderDto,
+    source: 'POS' | 'PUBLIC',
+  ): { created_at: Date; updated_at: Date } | null {
+    if (source !== 'POS') return null;
+    const raw = dto.client_created_at?.trim();
+    if (!raw) return null;
+    const d = new Date(raw);
+    if (Number.isNaN(d.getTime())) {
+      throw new BadRequestException('Invalid client_created_at');
+    }
+    const now = new Date();
+    const maxSkewMs = 5 * 60 * 1000;
+    if (d.getTime() > now.getTime() + maxSkewMs) {
+      throw new BadRequestException('client_created_at cannot be in the future');
+    }
+    const maxAgeMs = 365 * 24 * 60 * 60 * 1000;
+    if (d.getTime() < now.getTime() - maxAgeMs) {
+      throw new BadRequestException('client_created_at is too far in the past');
+    }
+    return { created_at: d, updated_at: d };
   }
 
   /** Parse `customizations` JSON from POS/website: `{ modifications: [{ type, label }] }`. */
@@ -248,7 +296,10 @@ export class OrdersService {
   }
 
   async create(dto: CreateOrderDto, cashierId?: number, source: 'POS' | 'PUBLIC' = 'POS') {
-    const resolvedCashierId = await this.resolveCashierId(cashierId);
+    const resolvedCashierId =
+      source === 'PUBLIC'
+        ? await this.resolvePublicWebsiteCashierId()
+        : await this.resolvePosCashierId(cashierId);
     const [storeSettings, loyaltySettings] = await Promise.all([
       this.settingsService.getStore(),
       this.settingsService.getLoyalty(),
@@ -483,6 +534,9 @@ export class OrdersService {
     const initialOrderStatus =
       source === 'PUBLIC' || isPosDeliveryCheckout ? OrderStatus.PENDING : OrderStatus.COMPLETED;
 
+    const clientOrderTimes = this.resolvePosClientOrderTimestamps(dto, source);
+    const rowCreatedAt = clientOrderTimes?.created_at;
+
     // 4. Create order in a transaction
     const order = await this.prisma.$transaction(async (tx) => {
       const orderNumber = await this.generateOrderNumber();
@@ -501,6 +555,12 @@ export class OrdersService {
           customer_id: resolvedCustomerId ?? null,
           cashier_id: resolvedCashierId,
           items: { create: itemsData },
+          ...(clientOrderTimes
+            ? {
+                created_at: clientOrderTimes.created_at,
+                updated_at: clientOrderTimes.updated_at,
+              }
+            : {}),
           ...(orderAddonsCreate.length
             ? {
                 orderAddons: {
@@ -531,6 +591,7 @@ export class OrdersService {
             payment_method: line.payment_method,
             amount: line.amount,
             status: 'COMPLETED',
+            ...(rowCreatedAt ? { created_at: rowCreatedAt } : {}),
           },
         });
       }
@@ -547,6 +608,7 @@ export class OrdersService {
             points_change: -loyaltyPointsToRedeemUnits,
             type: 'REDEEMED',
             related_order_id: createdOrder.id,
+            ...(rowCreatedAt ? { created_at: rowCreatedAt } : {}),
           },
         });
       }
@@ -573,6 +635,7 @@ export class OrdersService {
             points_change: pointsEarned,
             type: 'EARNED',
             related_order_id: createdOrder.id,
+            ...(rowCreatedAt ? { created_at: rowCreatedAt } : {}),
           },
         });
         }
@@ -589,6 +652,7 @@ export class OrdersService {
             address: dto.delivery_address,
             notes: this.combineOrderAndDeliveryNotes(dto.order_notes, dto.delivery_notes),
             status: 'NEW',
+            ...(rowCreatedAt ? { created_at: rowCreatedAt } : {}),
           },
         });
       } else if (
@@ -604,6 +668,7 @@ export class OrdersService {
             notes:
               this.combineOrderAndDeliveryNotes(dto.order_notes, dto.delivery_notes) ?? 'Source: WEBSITE',
             status: 'NEW',
+            ...(rowCreatedAt ? { created_at: rowCreatedAt } : {}),
           },
         });
       }
@@ -622,6 +687,7 @@ export class OrdersService {
         total: order.total,
         client_order_id: dto.client_order_id,
       },
+      created_at: order.created_at,
     });
     this.eventEmitter.emit('order.created', { order, source });
 
@@ -956,11 +1022,22 @@ export class OrdersService {
       throw new ForbiddenException('Invalid manager PIN');
     }
 
+    const refundNoteLine = dto.reason?.trim()
+      ? `Refund reason: ${dto.reason.trim()}`
+      : undefined;
+
     // Mark completed payments as refunded; order is canceled (same as manual cancel for reporting)
     const updated = await this.prisma.order.update({
       where: { id },
       data: {
         status: OrderStatus.CANCELLED,
+        ...(refundNoteLine
+          ? {
+              notes: order.notes?.trim()
+                ? `${order.notes.trim()}\n\n${refundNoteLine}`
+                : refundNoteLine,
+            }
+          : {}),
         transactions: {
           updateMany: {
             where: { status: TransactionStatus.COMPLETED },

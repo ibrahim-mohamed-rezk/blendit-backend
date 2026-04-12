@@ -7,6 +7,8 @@ export interface CreateLogDto {
   entity?: string;
   entity_id?: number;
   metadata?: Record<string, any>;
+  /** When set (e.g. backdated POS sync), aligns the log with the order row. */
+  created_at?: Date;
 }
 
 @Injectable()
@@ -18,7 +20,13 @@ export class ActivityLogsService {
   /** Best-effort: never fail the caller (e.g. login) if the table is missing or DB errors. */
   async create(dto: CreateLogDto) {
     try {
-      return await this.prisma.activityLog.create({ data: dto });
+      const { created_at, ...rest } = dto;
+      return await this.prisma.activityLog.create({
+        data: {
+          ...rest,
+          ...(created_at ? { created_at } : {}),
+        },
+      });
     } catch (err) {
       this.logger.warn(
         `Activity log skipped (${dto.action}): ${err instanceof Error ? err.message : String(err)}`,

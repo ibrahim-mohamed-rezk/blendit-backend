@@ -8,6 +8,16 @@ import * as bcrypt from 'bcrypt';
 export class UsersService {
   constructor(private prisma: PrismaService) {}
 
+  private toPublicUser(user: {
+    password_hash: string;
+    pin_hash: string | null;
+    role?: { name: string };
+    [key: string]: unknown;
+  }) {
+    const { password_hash: _p, pin_hash: ph, ...rest } = user;
+    return { ...rest, has_pos_pin: !!ph };
+  }
+
   async create(dto: CreateUserDto) {
     const exists = await this.prisma.user.findUnique({ where: { email: dto.email } });
     if (exists) throw new BadRequestException('Email already in use');
@@ -32,8 +42,7 @@ export class UsersService {
       data: data as Parameters<typeof this.prisma.user.create>[0]['data'],
       include: { role: true },
     });
-    const { password_hash: _, pin_hash: __, ...result } = user;
-    return result;
+    return this.toPublicUser(user);
   }
 
   async findAll(page = 1, limit = 10) {
@@ -47,7 +56,7 @@ export class UsersService {
       }),
       this.prisma.user.count(),
     ]);
-    return { data: data.map(({ password_hash, pin_hash, ...u }) => u), total, page, limit };
+    return { data: data.map((u) => this.toPublicUser(u)), total, page, limit };
   }
 
   async findOne(id: number) {
@@ -56,8 +65,7 @@ export class UsersService {
       include: { role: true },
     });
     if (!user) throw new NotFoundException(`User #${id} not found`);
-    const { password_hash, pin_hash, ...result } = user;
-    return result;
+    return this.toPublicUser(user);
   }
 
   async update(id: number, dto: UpdateUserDto) {
@@ -68,7 +76,9 @@ export class UsersService {
       delete data.password;
     }
     if ('pin' in dto) {
-      data.pin_hash = dto.pin?.trim() ? await bcrypt.hash(dto.pin.trim(), 10) : null;
+      const raw = dto.pin;
+      data.pin_hash =
+        raw != null && String(raw).trim() !== '' ? await bcrypt.hash(String(raw).trim(), 10) : null;
       delete data.pin;
     }
     if ('page_access' in dto) {
@@ -79,8 +89,7 @@ export class UsersService {
       data,
       include: { role: true },
     });
-    const { password_hash, pin_hash, ...result } = user;
-    return result;
+    return this.toPublicUser(user);
   }
 
   async remove(id: number) {

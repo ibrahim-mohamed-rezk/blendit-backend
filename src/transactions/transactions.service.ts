@@ -28,10 +28,15 @@ export class TransactionsService {
     const parts: Prisma.TransactionWhereInput[] = [];
 
     if (dto.date) {
-      const start = new Date(dto.date);
-      const end = new Date(dto.date);
-      end.setDate(end.getDate() + 1);
-      parts.push({ created_at: { gte: start, lt: end } });
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dto.date.trim());
+      if (m) {
+        const y = Number(m[1]);
+        const mo = Number(m[2]);
+        const da = Number(m[3]);
+        const start = new Date(y, mo - 1, da, 0, 0, 0, 0);
+        const end = new Date(y, mo - 1, da + 1, 0, 0, 0, 0);
+        parts.push({ created_at: { gte: start, lt: end } });
+      }
     }
 
     if (dto.paymentMethod) {
@@ -71,6 +76,20 @@ export class TransactionsService {
 
     const where: Prisma.TransactionWhereInput = parts.length > 0 ? { AND: parts } : {};
 
+    /**
+     * Dashboard “today’s sales” uses completed orders only. With status/type “all”, headline totals
+     * must sum COMPLETED payments only — refunded rows still hold a positive amount and were inflating
+     * Total Amount vs cashier revenue (which already excluded refunds).
+     */
+    const useCompletedSalesTotal =
+      !mappedStatus && dto.type !== 'refund' && dto.type !== 'expense';
+
+    const sumWhere: Prisma.TransactionWhereInput = useCompletedSalesTotal
+      ? parts.length > 0
+        ? { AND: [...parts, { status: TransactionStatus.COMPLETED }] }
+        : { status: TransactionStatus.COMPLETED }
+      : where;
+
     const refundWhere: Prisma.TransactionWhereInput =
       parts.length > 0
         ? { AND: [...parts, { status: TransactionStatus.REFUNDED }] }
@@ -85,6 +104,7 @@ export class TransactionsService {
       data,
       total,
       sumRow,
+      amountCount,
       byUserAll,
       byUserRevenue,
       byUserRefunds,
@@ -98,9 +118,10 @@ export class TransactionsService {
       }),
       this.prisma.transaction.count({ where }),
       this.prisma.transaction.aggregate({
-        where,
+        where: sumWhere,
         _sum: { amount: true },
       }),
+      this.prisma.transaction.count({ where: sumWhere }),
       this.prisma.transaction.groupBy({
         by: ['user_id'],
         where,
@@ -157,6 +178,7 @@ export class TransactionsService {
       limit,
       summary: {
         totalAmount: sumRow._sum.amount ?? 0,
+        amountTransactionCount: amountCount,
         byCashier,
       },
     };

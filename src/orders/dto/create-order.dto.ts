@@ -2,6 +2,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
   IsArray,
+  IsDateString,
   IsEnum,
   IsIn,
   IsInt,
@@ -162,6 +163,15 @@ export class CreateOrderDto {
   @IsOptional()
   @IsString()
   client_order_id?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'POS: ISO 8601 checkout time when the sale was taken (e.g. offline); server uses it for created_at when valid',
+    example: '2026-04-12T14:30:00.000Z',
+  })
+  @IsOptional()
+  @IsDateString()
+  client_created_at?: string;
 
   @ApiPropertyOptional({ type: [OrderAddonLineDto], description: 'Optional order-level add-ons' })
   @IsOptional()

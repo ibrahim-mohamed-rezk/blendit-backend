@@ -82,6 +82,12 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       total: order.total,
       status: order.status,
     });
+    // Admin / delivery dashboards (not in `pos` room) still need to refetch lists
+    this.server.emit('order_book_changed', {
+      order_id: order.id,
+      order_number: order.order_number,
+      source,
+    });
   }
 
   @OnEvent('order.statusUpdated')
@@ -100,6 +106,33 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     });
   }
 
+  /** Refund cancels the sale — POS must refresh order + payment state without reload. */
+  @OnEvent('order.refunded')
+  handleOrderRefunded(order: any) {
+    this.server.emit('order_status_updated', {
+      id: order.id,
+      order_number: order.order_number,
+      status: order.status,
+    });
+    this.server.to('customer-display').emit('customer_display_update', {
+      order_number: order.order_number,
+      customer_name: order.customer?.name || 'Walk-in Customer',
+      items: order.items,
+      total: order.total,
+      status: order.status,
+    });
+  }
+
+  /** Admin edited items/totals on a pending order — notify POS to resync. */
+  @OnEvent('order.updated')
+  handleOrderBodyUpdated(order: any) {
+    this.server.emit('order_status_updated', {
+      id: order.id,
+      order_number: order.order_number,
+      status: order.status,
+    });
+  }
+
   @OnEvent('delivery.created')
   handleDeliveryCreated(delivery: any) {
     this.server.to('delivery').emit('delivery_order_created', delivery);
@@ -108,6 +141,15 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   @OnEvent('delivery.statusUpdated')
   handleDeliveryStatusUpdated(delivery: any) {
+    this.server.emit('delivery_order_updated', {
+      id: delivery.id,
+      status: delivery.status,
+    });
+  }
+
+  /** Address/notes changed on a delivery row — refresh POS queue. */
+  @OnEvent('delivery.updated')
+  handleDeliveryMetadataUpdated(delivery: any) {
     this.server.emit('delivery_order_updated', {
       id: delivery.id,
       status: delivery.status,

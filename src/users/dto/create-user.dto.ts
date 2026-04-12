@@ -1,5 +1,15 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsEmail, IsNotEmpty, IsOptional, IsString, MinLength, IsInt, IsArray } from 'class-validator';
+import {
+  IsEmail,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  MinLength,
+  IsInt,
+  IsArray,
+  Matches,
+  ValidateIf,
+} from 'class-validator';
 
 export class CreateUserDto {
   @ApiProperty()
@@ -22,10 +32,13 @@ export class CreateUserDto {
   @MinLength(6)
   password: string;
 
-  @ApiPropertyOptional({ description: 'POS quick-switch PIN (4-6 digits)' })
+  @ApiPropertyOptional({
+    description: 'POS switch PIN (4–6 digits only). Separate from login password; used for “Switch user” on POS.',
+  })
   @IsOptional()
+  @ValidateIf((_, v) => v != null && String(v).trim() !== '')
   @IsString()
-  @MinLength(4)
+  @Matches(/^\d{4,6}$/, { message: 'POS PIN must be 4–6 digits' })
   pin?: string;
 
   @ApiProperty({ description: 'Role ID (1=SUPER_ADMIN, 2=ADMIN, 3=CASHIER)' })

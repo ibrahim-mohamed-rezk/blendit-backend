@@ -13,6 +13,12 @@ import { Roles } from '../common/decorators/roles.decorator';
 export class AnalyticsController {
   constructor(private readonly analyticsService: AnalyticsService) {}
 
+  @Get('lifetime-summary')
+  @ApiOperation({ summary: 'All-time dashboard KPIs (completed orders, customers, pending deliveries)' })
+  lifetimeSummary() {
+    return this.analyticsService.getLifetimeSummary();
+  }
+
   @Get('daily-sales')
   @ApiOperation({ summary: 'Daily sales summary' })
   dailySales() {
