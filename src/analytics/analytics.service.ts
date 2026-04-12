@@ -31,15 +31,29 @@ export class AnalyticsService {
     return { start, end };
   }
 
+  /**
+   * Period sales aligned with the Transactions screen: sum of COMPLETED payment rows whose
+   * `created_at` falls in the range, for orders that are COMPLETED. Uses each transaction amount
+   * (split payments, corrections) rather than `order.total`, so totals match payment history.
+   */
   async getSalesSummary(period: 'daily' | 'weekly' | 'monthly') {
     const { start, end } = this.getDateRange(period);
-    const orders = await this.prisma.order.findMany({
-      where: { created_at: { gte: start, lte: end }, status: OrderStatus.COMPLETED },
-      select: { total: true },
+    const txnWhere = {
+      status: TransactionStatus.COMPLETED,
+      created_at: { gte: start, lte: end },
+      order: { status: OrderStatus.COMPLETED },
+    };
+
+    const byOrder = await this.prisma.transaction.groupBy({
+      by: ['order_id'],
+      where: txnWhere,
+      _sum: { amount: true },
     });
-    const totalRevenue = orders.reduce((sum, o) => sum + o.total, 0);
-    const totalOrders = orders.length;
-    const avgOrderValue = totalOrders ? totalRevenue / totalOrders : 0;
+
+    const totalOrders = byOrder.length;
+    const totalRevenue = byOrder.reduce((sum, row) => sum + (row._sum.amount ?? 0), 0);
+    const avgOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0;
+
     return { period, totalRevenue, totalOrders, avgOrderValue };
   }
 
@@ -124,16 +138,25 @@ export class AnalyticsService {
       buckets[key] = { date: key, revenue: 0, count: 0 };
     }
 
-    const orders = await this.prisma.order.findMany({
-      where: { created_at: { gte: start, lte: end }, status: OrderStatus.COMPLETED },
-      select: { total: true, created_at: true },
+    const txns = await this.prisma.transaction.findMany({
+      where: {
+        status: TransactionStatus.COMPLETED,
+        created_at: { gte: start, lte: end },
+        order: { status: OrderStatus.COMPLETED },
+      },
+      select: { amount: true, created_at: true, order_id: true },
       orderBy: { created_at: 'asc' },
     });
-    for (const order of orders) {
-      const date = this.localDateKey(order.created_at);
+    const ordersPerDay: Record<string, Set<number>> = {};
+    for (const t of txns) {
+      const date = this.localDateKey(t.created_at);
       if (!buckets[date]) buckets[date] = { date, revenue: 0, count: 0 };
-      buckets[date].revenue += order.total;
-      buckets[date].count += 1;
+      buckets[date].revenue += t.amount;
+      if (!ordersPerDay[date]) ordersPerDay[date] = new Set();
+      ordersPerDay[date].add(t.order_id);
+    }
+    for (const key of Object.keys(buckets)) {
+      buckets[key].count = ordersPerDay[key]?.size ?? 0;
     }
     return Object.values(buckets).sort((a, b) => a.date.localeCompare(b.date));
   }
