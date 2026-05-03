@@ -1,0 +1,10 @@
+# Fix: 413 Request Entity Too Large on POST /api/v1/products/upload-image
+#
+# Nginx checks body size before the request reaches Node. Default is 1m.
+# Merge the line below into the server { } block for api.blenditjuice.com
+# (or the location that proxy_passes to your Nest app), then:
+#   sudo nginx -t && sudo systemctl reload nginx
+#
+# Use a value >= your largest expected upload (and >= Nest multer limit in products.controller.ts).
+
+client_max_body_size 25m;
