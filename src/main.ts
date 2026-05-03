@@ -3,6 +3,7 @@ import { ValidationPipe } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { ConfigService } from '@nestjs/config';
+import { resolveUploadsRootDir } from './common/uploads-root';
 import { AppModule } from './app.module';
 import { normalizeWapilotApiToken } from './public/wapilot-config.util';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
@@ -26,6 +27,11 @@ async function bootstrap() {
 
   // Global prefix
   app.setGlobalPrefix('api/v1');
+
+  // Local media (product images, customer-display videos) — not under /api/v1
+  const uploadsDir = resolveUploadsRootDir(configService.get<string>('UPLOADS_ROOT'), process.cwd());
+  app.useStaticAssets(uploadsDir, { prefix: '/uploads/' });
+  console.log(`📁 Uploads directory: ${uploadsDir} (served at /uploads/)`);
 
   // CORS
   app.enableCors({

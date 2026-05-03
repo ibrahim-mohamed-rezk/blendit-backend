@@ -145,7 +145,7 @@ export class SettingsService {
     if (patch.customerDisplayVideoUrl !== undefined) {
       const nextUrl = String(patch.customerDisplayVideoUrl).trim();
       if (nextUrl !== '') {
-        // Switching to an external URL (or Cloudinary URL): use URL, clear legacy path.
+        // Switching to an external URL: use URL, clear legacy local path.
         merged.customerDisplayVideoPath = '';
         merged.customerDisplayVideoUrl = nextUrl;
       } else {
@@ -182,12 +182,13 @@ export class SettingsService {
     };
   }
 
-  async setCustomerDisplayVideoCloudUrl(url: string): Promise<Record<string, unknown>> {
+  /** Store uploaded video as a path under `/uploads/...` (clears external URL). */
+  async setCustomerDisplayVideoLocalPath(publicPath: string): Promise<Record<string, unknown>> {
     const current = await this.getStoreMerged();
     const saved = await this.setByKey('store', {
       ...current,
-      customerDisplayVideoPath: '',
-      customerDisplayVideoUrl: url.trim(),
+      customerDisplayVideoPath: publicPath.trim(),
+      customerDisplayVideoUrl: '',
     });
     return this.sanitizeStoreForClient(saved as Record<string, unknown>);
   }

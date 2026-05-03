@@ -20,7 +20,7 @@ import { UpdateLoyaltySettingsDto } from './dto/update-loyalty-settings.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
-import { CloudinaryService } from '../common/services/cloudinary.service';
+import { LocalUploadService } from '../common/services/local-upload.service';
 
 type UploadedMemoryFile = {
   buffer: Buffer;
@@ -33,7 +33,7 @@ type UploadedMemoryFile = {
 export class SettingsController {
   constructor(
     private readonly settingsService: SettingsService,
-    private readonly cloudinaryService: CloudinaryService,
+    private readonly localUploadService: LocalUploadService,
   ) {}
 
   @Get('customer-display')
@@ -89,12 +89,13 @@ export class SettingsController {
   @ApiOperation({ summary: 'Upload customer display background video (replaces external URL)' })
   async uploadCustomerDisplayVideo(@UploadedFile() file: UploadedMemoryFile | undefined) {
     if (!file) throw new BadRequestException('No file uploaded');
-    const uploaded = await this.cloudinaryService.uploadBuffer(file.buffer, {
-      folder: 'blendit/customer-display',
-      resource_type: 'video',
+    const uploaded = await this.localUploadService.saveBuffer(file.buffer, {
+      mimetype: file.mimetype,
+      originalname: file.originalname,
+      subfolder: 'customer-display',
     });
-    await this.settingsService.setCustomerDisplayVideoCloudUrl(uploaded.secureUrl);
-    return { path: uploaded.secureUrl, filename: uploaded.publicId };
+    await this.settingsService.setCustomerDisplayVideoLocalPath(uploaded.path);
+    return { path: uploaded.path, filename: uploaded.filename };
   }
 
   @Put('loyalty')

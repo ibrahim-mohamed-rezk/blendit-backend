@@ -8,9 +8,6 @@ jobs:
   deploy:
     runs-on: self-hosted
     env:
-      CLOUDINARY_API_KEY: ${{ secrets.CLOUDINARY_API_KEY }}
-      CLOUDINARY_API_SECRET: ${{ secrets.CLOUDINARY_API_SECRET }}
-      CLOUDINARY_CLOUD_NAME: ${{ secrets.CLOUDINARY_CLOUD_NAME }}
       SEED_ADMIN_PASSWORD: ${{ secrets.SEED_ADMIN_PASSWORD }}
       SEED_ADMIN_EMAIL: ${{ secrets.SEED_ADMIN_EMAIL }}
       PRISMA_CONNECT_ON_STARTUP: ${{ secrets.PRISMA_CONNECT_ON_STARTUP }}
@@ -20,6 +17,7 @@ jobs:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       WAPILOT_API_TOKEN: ${{ secrets.WAPILOT_API_TOKEN }}
       WAPILOT_INSTANCE_ID: ${{ secrets.WAPILOT_INSTANCE_ID }}
+      UPLOADS_ROOT: ${{ secrets.UPLOADS_ROOT }}
       
     steps:
       - name: 📥 Checkout code
@@ -36,19 +34,22 @@ jobs:
 
       - name: Create .env
         run: |
+          # Persistent uploads outside the repo (survives git clean on checkout). Override with GitHub secret UPLOADS_ROOT.
+          UPLOADS_ROOT="${{ secrets.UPLOADS_ROOT }}"
+          if [ -z "$UPLOADS_ROOT" ]; then UPLOADS_ROOT="$HOME/blendit-data/uploads"; fi
+          mkdir -p "$UPLOADS_ROOT/products" "$UPLOADS_ROOT/customer-display"
+
           echo "DATABASE_URL=${{ secrets.DATABASE_URL }}" > .env
           echo "JWT_SECRET=${{ secrets.JWT_SECRET }}" >> .env
           echo "PORT=${{ secrets.PORT }}" >> .env
-          echo "CLOUDINARY_API_KEY=${{ secrets.CLOUDINARY_API_KEY }}" >> .env
-          echo "CLOUDINARY_API_SECRET=${{ secrets.CLOUDINARY_API_SECRET }}" >> .env
-          echo "CLOUDINARY_CLOUD_NAME=${{ secrets.CLOUDINARY_CLOUD_NAME }}" >> .env
           echo "SEED_ADMIN_PASSWORD=${{ secrets.SEED_ADMIN_PASSWORD }}" >> .env
           echo "SEED_ADMIN_EMAIL=${{ secrets.SEED_ADMIN_EMAIL }}" >> .env
           echo "PRISMA_CONNECT_ON_STARTUP=${{ secrets.PRISMA_CONNECT_ON_STARTUP }}" >> .env
           echo "JWT_EXPIRATION=${{ secrets.JWT_EXPIRATION }}" >> .env
           echo "WAPILOT_INSTANCE_ID=${{ secrets.WAPILOT_INSTANCE_ID }}" >> .env
           echo "WAPILOT_API_TOKEN=${{ secrets.WAPILOT_API_TOKEN }}" >> .env
-                  
+          echo "UPLOADS_ROOT=$UPLOADS_ROOT" >> .env
+
 
       - name: ⚙️ Prisma Generate
         run: npx prisma generate

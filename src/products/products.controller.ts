@@ -25,7 +25,7 @@ import { FindAllProductsQueryDto } from './dto/find-all-products-query.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
-import { CloudinaryService } from '../common/services/cloudinary.service';
+import { LocalUploadService } from '../common/services/local-upload.service';
 
 type UploadedMemoryFile = {
   buffer: Buffer;
@@ -40,7 +40,7 @@ type UploadedMemoryFile = {
 export class ProductsController {
   constructor(
     private readonly productsService: ProductsService,
-    private readonly cloudinaryService: CloudinaryService,
+    private readonly localUploadService: LocalUploadService,
   ) {}
 
   // --- Categories ---
@@ -116,11 +116,12 @@ export class ProductsController {
   @ApiOperation({ summary: 'Upload product image' })
   async uploadProductImage(@UploadedFile() file: UploadedMemoryFile | undefined) {
     if (!file) throw new BadRequestException('No file uploaded');
-    const uploaded = await this.cloudinaryService.uploadBuffer(file.buffer, {
-      folder: 'blendit/products',
-      resource_type: 'image',
+    const uploaded = await this.localUploadService.saveBuffer(file.buffer, {
+      mimetype: file.mimetype,
+      originalname: file.originalname,
+      subfolder: 'products',
     });
-    return { path: uploaded.secureUrl, filename: uploaded.publicId };
+    return { path: uploaded.path, filename: uploaded.filename };
   }
 
   @Get('products')

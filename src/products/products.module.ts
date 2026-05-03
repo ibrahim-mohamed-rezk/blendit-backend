@@ -1,11 +1,11 @@
 import { Module } from '@nestjs/common';
 import { ProductsService } from './products.service';
 import { ProductsController } from './products.controller';
-import { CloudinaryService } from '../common/services/cloudinary.service';
+import { LocalUploadService } from '../common/services/local-upload.service';
 
 @Module({
   controllers: [ProductsController],
-  providers: [ProductsService, CloudinaryService],
+  providers: [ProductsService, LocalUploadService],
   exports: [ProductsService],
 })
 export class ProductsModule {}
