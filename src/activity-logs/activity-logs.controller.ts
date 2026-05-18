@@ -6,10 +6,10 @@ import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { PaginationDto } from '../common/dto/pagination.dto';
 
-@ApiTags('Activity Logs')
+@ApiTags('Activity Logs') 
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles('SUPER_ADMIN', 'ADMIN')
+@Roles('SUPER_ADMIN', 'ADMIN') 
 @Controller('activity-logs')
 export class ActivityLogsController {
   constructor(private readonly activityLogsService: ActivityLogsService) {}

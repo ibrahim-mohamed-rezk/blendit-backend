@@ -297,9 +297,6 @@ export class OrdersService {
   }
 
   async create(dto: CreateOrderDto, cashierId?: number, source: 'POS' | 'PUBLIC' = 'POS') {
-    // #region agent log
-    fetch('http://127.0.0.1:7427/ingest/db655aab-0e65-4c4c-b7f0-6db61e11da7c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'2ec1bf'},body:JSON.stringify({sessionId:'2ec1bf',runId:'initial',hypothesisId:'H3',location:'orders.service.ts:create:entry',message:'orders create called',data:{source,cashierId:cashierId??null,clientOrderId:dto.client_order_id??null,itemCount:dto.items?.length??0,orderType:dto.order_type},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     const resolvedCashierId =
       source === 'PUBLIC'
         ? await this.resolvePublicWebsiteCashierId()
@@ -317,9 +314,6 @@ export class OrdersService {
         include: orderInclude,
       });
       if (existingOrder) {
-        // #region agent log
-        fetch('http://127.0.0.1:7427/ingest/db655aab-0e65-4c4c-b7f0-6db61e11da7c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'2ec1bf'},body:JSON.stringify({sessionId:'2ec1bf',runId:'post-fix',hypothesisId:'H10',location:'orders.service.ts:create:idempotency-precheck-hit',message:'duplicate create request returned existing order',data:{clientOrderId,orderId:existingOrder.id,orderNumber:existingOrder.order_number,source},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
         return existingOrder;
       }
     }
@@ -711,9 +705,6 @@ export class OrdersService {
         if (existingOrder) {
           resolvedFromUniqueConflict = true;
           order = existingOrder;
-          // #region agent log
-          fetch('http://127.0.0.1:7427/ingest/db655aab-0e65-4c4c-b7f0-6db61e11da7c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'2ec1bf'},body:JSON.stringify({sessionId:'2ec1bf',runId:'post-fix',hypothesisId:'H10',location:'orders.service.ts:create:idempotency-unique-hit',message:'duplicate create request resolved by unique constraint',data:{clientOrderId,orderId:existingOrder.id,orderNumber:existingOrder.order_number,source},timestamp:Date.now()})}).catch(()=>{});
-          // #endregion
         } else {
           throw error;
         }
@@ -721,10 +712,6 @@ export class OrdersService {
         throw error;
       }
     }
-    // #region agent log
-    fetch('http://127.0.0.1:7427/ingest/db655aab-0e65-4c4c-b7f0-6db61e11da7c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'2ec1bf'},body:JSON.stringify({sessionId:'2ec1bf',runId:'initial',hypothesisId:'H3',location:'orders.service.ts:create:created',message:'orders create completed',data:{orderId:order.id,orderNumber:order.order_number,clientOrderId:dto.client_order_id??null,source},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
-
     if (resolvedFromUniqueConflict) {
       return order;
     }

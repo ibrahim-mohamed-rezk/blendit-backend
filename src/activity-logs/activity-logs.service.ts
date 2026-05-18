@@ -1,11 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
-export interface CreateLogDto {
-  user_id: number;
+export interface CreateLogDto { 
+  user_id: number;  
   action: string;
-  entity?: string;
-  entity_id?: number;
+  entity?: string; 
+  entity_id?: number; 
   metadata?: Record<string, any>;
   /** When set (e.g. backdated POS sync), aligns the log with the order row. */
   created_at?: Date;
