@@ -134,6 +134,7 @@ enum OrderChannel {
 model Order {
   id           Int         @id @default(autoincrement())
   order_number String      @unique
+  client_order_id String?  @unique
   customer_id  Int?
   cashier_id   Int?
   order_type   OrderType
