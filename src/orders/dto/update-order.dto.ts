@@ -2,6 +2,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
   IsArray,
+  IsIn,
   IsInt,
   IsNumber,
   IsObject,
@@ -37,4 +38,13 @@ export class UpdateOrderDto {
   @ValidateNested({ each: true })
   @Type(() => OrderAddonLineDto)
   order_addons?: OrderAddonLineDto[];
+
+  @ApiPropertyOptional({
+    enum: ['CASH', 'CARD', 'WALLET'],
+    description: 'Update completed payment tender(s). Single-tender orders also sync amount to new total.',
+  })
+  @IsOptional()
+  @IsString()
+  @IsIn(['CASH', 'CARD', 'WALLET'])
+  payment_method?: string;
 }

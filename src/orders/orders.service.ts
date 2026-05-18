@@ -1019,15 +1019,20 @@ export class OrdersService {
 
     const discount = dto.discount ?? order.discount;
     const discountedSubtotal = Math.max(subtotal - discount, 0);
-    const tax = discountedSubtotal * taxRate;
+    const tax = discountedSubtotal * taxRate; 
     const total = discountedSubtotal + tax;
+
+    const paymentMethod = dto.payment_method?.trim().toUpperCase() as PaymentMethod | undefined;
+    if (paymentMethod && !['CASH', 'CARD', 'WALLET'].includes(paymentMethod)) {
+      throw new BadRequestException('payment_method must be CASH, CARD, or WALLET');
+    }
 
     const updated = await this.prisma.$transaction(async (tx) => {
       await tx.orderItem.deleteMany({ where: { order_id: id } });
       if (dto.order_addons !== undefined) {
         await tx.orderAddon.deleteMany({ where: { order_id: id } });
       }
-      return tx.order.update({
+      const saved = await tx.order.update({
         where: { id },
         data: {
           customer:
@@ -1057,12 +1062,90 @@ export class OrdersService {
           items: { include: { product: true } },
           orderAddons: { include: { addon: true } },
           customer: true,
+          cashier: { select: { id: true, name: true } },
+          transactions: true,
+        },
+      });
+
+      const txnCashierId = saved.cashier_id ?? order.cashier_id;
+      if (!txnCashierId && (paymentMethod || total !== order.total)) {
+        throw new BadRequestException('Order has no cashier to record payment');
+      }
+      if (txnCashierId) {
+        await this.syncOrderTransactionsAfterEdit(
+          tx,
+          id,
+          total,
+          txnCashierId,
+          paymentMethod,
+        );
+      }
+
+      return tx.order.findUniqueOrThrow({
+        where: { id },
+        include: {
+          items: { include: { product: true } },
+          orderAddons: { include: { addon: true } },
+          customer: true,
+          cashier: { select: { id: true, name: true } },
+          transactions: true,
+          deliveryOrders: true,
         },
       });
     });
 
     this.eventEmitter.emit('order.updated', updated);
     return updated;
+  }
+
+  /** Keep transaction rows aligned when admin edits order totals or payment method. */
+  private async syncOrderTransactionsAfterEdit(
+    tx: Prisma.TransactionClient,
+    orderId: number,
+    total: number,
+    cashierId: number,
+    paymentMethod?: PaymentMethod,
+  ): Promise<void> {
+    const completed = await tx.transaction.findMany({
+      where: { order_id: orderId, status: TransactionStatus.COMPLETED },
+      orderBy: { id: 'asc' },
+    });
+
+    if (paymentMethod) {
+      if (completed.length === 0) {
+        await tx.transaction.create({
+          data: {
+            order_id: orderId,
+            user_id: cashierId,
+            payment_method: paymentMethod,
+            amount: total,
+            status: TransactionStatus.COMPLETED,
+          },
+        });
+        return;
+      }
+      if (completed.length === 1) {
+        await tx.transaction.update({
+          where: { id: completed[0].id },
+          data: { payment_method: paymentMethod, amount: total },
+        });
+        return;
+      }
+      for (const row of completed) {
+        await tx.transaction.update({
+          where: { id: row.id },
+          data: { payment_method: paymentMethod },
+        });
+      }
+      return;
+    }
+
+    if (completed.length === 1) {
+      await tx.transaction.update({
+        where: { id: completed[0].id },
+        data: { amount: total },
+      });
+    }
   }
 
   async refund(id: number, dto: RefundOrderDto, user: { id: number; role?: { name: string } }) {
