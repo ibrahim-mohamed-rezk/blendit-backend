@@ -41,6 +41,8 @@ export class OrdersController {
   @ApiQuery({ name: 'status', enum: OrderStatus, required: false })
   @ApiQuery({ name: 'type', enum: OrderType, required: false })
   @ApiQuery({ name: 'date', required: false })
+  @ApiQuery({ name: 'fromDate', required: false, description: 'Start date (YYYY-MM-DD), inclusive' })
+  @ApiQuery({ name: 'toDate', required: false, description: 'End date (YYYY-MM-DD), inclusive' })
   @ApiQuery({ name: 'search', required: false })
   findAll(
     @Query('page') page?: string,
@@ -48,6 +50,8 @@ export class OrdersController {
     @Query('status') status?: OrderStatus,
     @Query('type') type?: OrderType,
     @Query('date') date?: string,
+    @Query('fromDate') fromDate?: string,
+    @Query('toDate') toDate?: string,
     @Query('search') search?: string,
   ) {
     const pageNum = page ? parseInt(page, 10) : 1;
@@ -58,6 +62,8 @@ export class OrdersController {
       status,
       type,
       date,
+      fromDate,
+      toDate,
       search?.trim(),
     );
   }

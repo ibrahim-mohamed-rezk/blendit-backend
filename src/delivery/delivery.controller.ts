@@ -28,6 +28,8 @@ export class DeliveryController {
       query.limit ?? 10,
       query.status,
       query.search?.trim(),
+      query.fromDate,
+      query.toDate,
     );
   }
 

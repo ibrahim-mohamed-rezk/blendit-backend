@@ -778,17 +778,43 @@ export class OrdersService {
     status?: OrderStatus,
     type?: string,
     date?: string,
+    fromDate?: string,
+    toDate?: string,
     search?: string,
   ) {
     const skip = (page - 1) * limit;
     const where: Record<string, unknown> = {};
     if (status) where.status = status;
     if (type) where.order_type = type;
-    if (date) {
-      const start = new Date(date);
-      const end = new Date(date);
-      end.setDate(end.getDate() + 1);
-      where.created_at = { gte: start, lt: end };
+    const parseYmdStart = (ymd: string): Date | undefined => {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd.trim());
+      if (!m) return undefined;
+      const y = Number(m[1]);
+      const mo = Number(m[2]);
+      const da = Number(m[3]);
+      return new Date(y, mo - 1, da, 0, 0, 0, 0);
+    };
+    const parseYmdEndExclusive = (ymd: string): Date | undefined => {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd.trim());
+      if (!m) return undefined;
+      const y = Number(m[1]);
+      const mo = Number(m[2]);
+      const da = Number(m[3]);
+      return new Date(y, mo - 1, da + 1, 0, 0, 0, 0);
+    };
+    const from = fromDate ? parseYmdStart(fromDate) : undefined;
+    const to = toDate ? parseYmdEndExclusive(toDate) : undefined;
+    if (from || to) {
+      where.created_at = {
+        ...(from ? { gte: from } : {}),
+        ...(to ? { lt: to } : {}),
+      };
+    } else if (date) {
+      const start = parseYmdStart(date);
+      const end = parseYmdEndExclusive(date);
+      if (start && end) {
+        where.created_at = { gte: start, lt: end };
+      }
     }
     if (search) {
       where.OR = [

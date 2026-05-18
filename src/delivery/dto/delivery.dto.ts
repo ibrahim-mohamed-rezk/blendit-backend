@@ -6,6 +6,7 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  Matches,
   Min,
   ValidateIf,
 } from 'class-validator';
@@ -35,6 +36,18 @@ export class GetDeliveryOrdersQueryDto {
   @IsOptional()
   @IsString()
   search?: string;
+
+  @ApiPropertyOptional({ description: 'Start date (YYYY-MM-DD), inclusive' })
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'fromDate must be YYYY-MM-DD' })
+  fromDate?: string;
+
+  @ApiPropertyOptional({ description: 'End date (YYYY-MM-DD), inclusive' })
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'toDate must be YYYY-MM-DD' })
+  toDate?: string;
 }
 
 export class UpdateDeliveryStatusDto {

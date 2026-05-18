@@ -27,14 +27,36 @@ export class TransactionsService {
 
     const parts: Prisma.TransactionWhereInput[] = [];
 
-    if (dto.date) {
-      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dto.date.trim());
-      if (m) {
-        const y = Number(m[1]);
-        const mo = Number(m[2]);
-        const da = Number(m[3]);
-        const start = new Date(y, mo - 1, da, 0, 0, 0, 0);
-        const end = new Date(y, mo - 1, da + 1, 0, 0, 0, 0);
+    const parseYmdStart = (ymd: string): Date | undefined => {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd.trim());
+      if (!m) return undefined;
+      const y = Number(m[1]);
+      const mo = Number(m[2]);
+      const da = Number(m[3]);
+      return new Date(y, mo - 1, da, 0, 0, 0, 0);
+    };
+
+    const parseYmdEndExclusive = (ymd: string): Date | undefined => {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd.trim());
+      if (!m) return undefined;
+      const y = Number(m[1]);
+      const mo = Number(m[2]);
+      const da = Number(m[3]);
+      return new Date(y, mo - 1, da + 1, 0, 0, 0, 0);
+    };
+
+    const from = dto.fromDate ? parseYmdStart(dto.fromDate) : undefined;
+    const to = dto.toDate ? parseYmdEndExclusive(dto.toDate) : undefined;
+
+    if (from || to) {
+      const createdAtFilter: Prisma.DateTimeFilter = {};
+      if (from) createdAtFilter.gte = from;
+      if (to) createdAtFilter.lt = to;
+      parts.push({ created_at: createdAtFilter });
+    } else if (dto.date) {
+      const start = parseYmdStart(dto.date);
+      const end = parseYmdEndExclusive(dto.date);
+      if (start && end) {
         parts.push({ created_at: { gte: start, lt: end } });
       }
     }

@@ -75,10 +75,41 @@ export class DeliveryService {
     return delivery;
   }
 
-  async findAll(page = 1, limit = 10, status?: string, search?: string) {
+  async findAll(
+    page = 1,
+    limit = 10,
+    status?: string,
+    search?: string,
+    fromDate?: string,
+    toDate?: string,
+  ) {
     const skip = (page - 1) * limit;
     const where: Prisma.DeliveryOrderWhereInput = {};
     if (status) where.status = status as DeliveryStatus;
+    const parseYmdStart = (ymd: string): Date | undefined => {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd.trim());
+      if (!m) return undefined;
+      const y = Number(m[1]);
+      const mo = Number(m[2]);
+      const da = Number(m[3]);
+      return new Date(y, mo - 1, da, 0, 0, 0, 0);
+    };
+    const parseYmdEndExclusive = (ymd: string): Date | undefined => {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd.trim());
+      if (!m) return undefined;
+      const y = Number(m[1]);
+      const mo = Number(m[2]);
+      const da = Number(m[3]);
+      return new Date(y, mo - 1, da + 1, 0, 0, 0, 0);
+    };
+    const from = fromDate ? parseYmdStart(fromDate) : undefined;
+    const to = toDate ? parseYmdEndExclusive(toDate) : undefined;
+    if (from || to) {
+      where.created_at = {
+        ...(from ? { gte: from } : {}),
+        ...(to ? { lt: to } : {}),
+      };
+    }
     if (search) {
       where.OR = [
         { order: { order_number: { contains: search, mode: 'insensitive' } } },

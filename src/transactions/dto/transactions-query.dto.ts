@@ -11,6 +11,18 @@ export class TransactionsQueryDto extends PaginationDto {
   @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'date must be YYYY-MM-DD' })
   date?: string;
 
+  @ApiPropertyOptional({ description: 'Range start day (YYYY-MM-DD), inclusive' })
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'fromDate must be YYYY-MM-DD' })
+  fromDate?: string;
+
+  @ApiPropertyOptional({ description: 'Range end day (YYYY-MM-DD), inclusive' })
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'toDate must be YYYY-MM-DD' })
+  toDate?: string;
+
   @ApiPropertyOptional({ enum: PaymentMethod })
   @IsOptional()
   @Transform(({ value }) => (typeof value === 'string' ? value.toUpperCase() : value))
