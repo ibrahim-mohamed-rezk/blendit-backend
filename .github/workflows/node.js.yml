@@ -68,6 +68,14 @@ jobs:
       - name: 🗄️ Run Migrations
         run: npx prisma migrate deploy
 
+      # Seeds roles + the super-admin user (and default branch/settings).
+      # Idempotent: the admin is only created if it does not already exist, and
+      # everything else uses upserts, so it is safe to run on every deploy.
+      # The admin credentials come from the SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD
+      # secrets (falling back to admin@blendit.com / Admin@123 when unset).
+      - name: 🌱 Seed database
+        run: npx prisma db seed
+
       - name: 🏗️ Build project
         run: npm run build
 
