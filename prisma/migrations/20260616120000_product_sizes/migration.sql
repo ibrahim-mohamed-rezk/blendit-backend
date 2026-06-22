@@ -19,3 +19,9 @@ ALTER TABLE "product_sizes" ADD CONSTRAINT "product_sizes_product_id_fkey" FOREI
 ALTER TABLE "order_items" ADD COLUMN "product_size_id" INTEGER;
 
 ALTER TABLE "order_items" ADD CONSTRAINT "order_items_product_size_id_fkey" FOREIGN KEY ("product_size_id") REFERENCES "product_sizes"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- Foreign key for the per-size recipe column added in
+-- 20260615160000_product_recipe_per_size. It lives here because
+-- "product_sizes" only exists from this migration onward.
+ALTER TABLE "product_recipe_items" ADD CONSTRAINT "product_recipe_items_product_size_id_fkey"
+  FOREIGN KEY ("product_size_id") REFERENCES "product_sizes"("id") ON DELETE CASCADE ON UPDATE CASCADE;
