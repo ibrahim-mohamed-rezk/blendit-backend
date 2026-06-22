@@ -24,6 +24,6 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException('Account is inactive or invalid');
     }
 
-    return user;
+    return { ...user, jwtBranchId: payload.branch_id ?? null };
   }
 }

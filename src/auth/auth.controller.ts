@@ -6,6 +6,9 @@ import { LoginDto } from './dto/login.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { PosSwitchDto } from './dto/pos-switch.dto';
+import { SwitchBranchDto } from './dto/switch-branch.dto';
+import { BranchGuard } from '../common/guards/branch.guard';
+import { CurrentBranch } from '../common/decorators/current-branch.decorator';
 
 @ApiTags('Auth')
 @Controller('auth')
@@ -40,12 +43,21 @@ export class AuthController {
     return this.authService.getMe(user.id);
   }
 
-  @Get('pos-users')
+  @Post('switch-branch')
+  @HttpCode(200)
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Switch active branch (admin / super admin)' })
+  async switchBranch(@CurrentUser() user: { id: number }, @Body() dto: SwitchBranchDto) {
+    return this.authService.switchBranch(user.id, dto);
+  }
+
+  @Get('pos-users')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, BranchGuard)
   @ApiOperation({ summary: 'List active staff for POS quick switch' })
-  async getPosUsers() {
-    return this.authService.getPosSwitchUsers();
+  async getPosUsers(@CurrentBranch() branchId: number) {
+    return this.authService.getPosSwitchUsers(branchId);
   }
 
   @Post('pos-switch')

@@ -6,12 +6,14 @@ import { AuthController } from './auth.controller';
 import { JwtStrategy } from './jwt.strategy';
 import { PrismaModule } from '../prisma/prisma.module';
 import { ActivityLogsModule } from '../activity-logs/activity-logs.module';
+import { BranchesModule } from '../branches/branches.module';
 import { ConfigService } from '@nestjs/config';
 
 @Module({
   imports: [
     PrismaModule,
     ActivityLogsModule,
+    BranchesModule,
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.registerAsync({
       inject: [ConfigService],

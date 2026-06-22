@@ -31,6 +31,11 @@ export class OrderItemDto {
   @IsString()
   notes?: string;
 
+  @ApiPropertyOptional({ description: 'Required when the product has active sizes' })
+  @IsOptional()
+  @IsInt()
+  product_size_id?: number;
+
   @ApiPropertyOptional({ example: { remove: ['sugar'], add: ['extra ice'] } })
   @IsOptional()
   @IsObject()
@@ -61,6 +66,17 @@ export class LoyaltyPosRedemptionDto {
   @IsOptional()
   @IsInt()
   loyalty_free_product_id?: number;
+}
+
+/** One free unit from a buy-X-get-Y offer (POS: one entry per free line). */
+export class BogoRedemptionDto {
+  @ApiProperty({ description: 'BOGO offer id' })
+  @IsInt()
+  bogo_offer_id: number;
+
+  @ApiProperty({ description: 'Free product id (must match offer get_product_id)' })
+  @IsInt()
+  free_product_id: number;
 }
 
 /** POS split tender: at least two lines; amounts must sum to order total (within tolerance). */
@@ -125,6 +141,16 @@ export class CreateOrderDto {
   loyalty_free_product_id?: number;
 
   @ApiPropertyOptional({
+    type: [BogoRedemptionDto],
+    description: 'POS: buy-X-get-Y free lines (one entry per free unit).',
+  })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => BogoRedemptionDto)
+  bogo_redemptions?: BogoRedemptionDto[];
+
+  @ApiPropertyOptional({
     enum: ['CASH', 'CARD', 'WALLET'],
     description:
       'Single tender. Omit when `payments` is set (split). WALLET is Instapay in POS/website.',
@@ -179,4 +205,9 @@ export class CreateOrderDto {
   @ValidateNested({ each: true })
   @Type(() => OrderAddonLineDto)
   order_addons?: OrderAddonLineDto[];
+
+  @ApiPropertyOptional({ description: 'Branch for website orders; POS uses X-Branch-Id header' })
+  @IsOptional()
+  @IsInt()
+  branch_id?: number;
 }

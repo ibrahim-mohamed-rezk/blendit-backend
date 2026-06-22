@@ -24,6 +24,14 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   private logger = new Logger('EventsGateway');
 
+  private branchRoom(role: string, branchId: number): string {
+    return `${role}:${branchId}`;
+  }
+
+  private resolveBranchId(payload: { branch_id?: number; order?: { branch_id?: number } }): number | undefined {
+    return payload.branch_id ?? payload.order?.branch_id;
+  }
+
   handleConnection(client: Socket) {
     this.logger.log(`Client connected: ${client.id}`);
   }
@@ -32,7 +40,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.logger.log(`Client disconnected: ${client.id}`);
   }
 
-  /** Join a room (pos, kitchen, delivery, customer-display, customer-table-X) */
+  /** Join a room (pos:{branchId}, kitchen:{branchId}, delivery:{branchId}, customer-display:{branchId}, branch:{branchId}) */
   @SubscribeMessage('join_room')
   handleJoinRoom(@MessageBody() room: string, @ConnectedSocket() client: Socket) {
     client.join(room);
@@ -40,11 +48,12 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     return { event: 'joined', data: room };
   }
 
-  /** Live cart update from POS - syncs all cashier changes (dine-in, takeaway, delivery) to customer display */
+  /** Live cart update from POS - syncs to customer display for the active branch */
   @SubscribeMessage('cart_update')
   handleCartUpdate(
     @MessageBody()
     payload: {
+      branch_id?: number;
       table?: string;
       items: Array<{
         productName: string;
@@ -61,98 +70,106 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       customerName?: string;
       orderType?: string;
     },
-    @ConnectedSocket() client: Socket,
+    @ConnectedSocket() _client: Socket,
   ) {
-    this.server.to('customer-display').emit('live_cart', payload);
+    const branchId = payload.branch_id;
+    const room =
+      branchId != null ? this.branchRoom('customer-display', branchId) : 'customer-display';
+    this.server.to(room).emit('live_cart', { ...payload, branch_id: branchId });
   }
 
-  // ── Listeners on internal events (from OrdersService / DeliveryService) ──
-
   @OnEvent('order.created')
-  handleOrderCreated(payload: { order: any; source: 'POS' | 'PUBLIC' }) {
+  handleOrderCreated(payload: { order: any; source: 'POS' | 'PUBLIC'; branch_id?: number }) {
     const { order, source } = payload;
-    const posPayload = { ...order, order_source: source };
-    this.server.to('pos').emit('new_order', posPayload);
-    this.server.to('kitchen').emit('new_order', posPayload);
-    // Customer display update
-    this.server.to('customer-display').emit('customer_display_update', {
-      order_number: order.order_number,
-      customer_name: order.customer?.name || 'Walk-in Customer',
-      items: order.items,
-      total: order.total,
-      status: order.status,
-    });
-    // Admin / delivery dashboards (not in `pos` room) still need to refetch lists
-    this.server.emit('order_book_changed', {
-      order_id: order.id,
-      order_number: order.order_number,
-      source,
-    });
+    const branchId = this.resolveBranchId(payload) ?? order.branch_id;
+    const posPayload = { ...order, order_source: source, branch_id: branchId };
+    if (branchId != null) {
+      this.server.to(this.branchRoom('pos', branchId)).emit('new_order', posPayload);
+      this.server.to(this.branchRoom('kitchen', branchId)).emit('new_order', posPayload);
+      this.server.to(this.branchRoom('customer-display', branchId)).emit('customer_display_update', {
+        branch_id: branchId,
+        order_number: order.order_number,
+        customer_name: order.customer?.name || 'Walk-in Customer',
+        items: order.items,
+        total: order.total,
+        status: order.status,
+      });
+      this.server.to(this.branchRoom('branch', branchId)).emit('order_book_changed', {
+        branch_id: branchId,
+        order_id: order.id,
+        order_number: order.order_number,
+        source,
+      });
+    }
   }
 
   @OnEvent('order.statusUpdated')
   handleOrderStatusUpdated(order: any) {
-    this.server.emit('order_status_updated', {
+    const branchId = order.branch_id;
+    const payload = {
+      branch_id: branchId,
       id: order.id,
       order_number: order.order_number,
       status: order.status,
-    });
-    this.server.to('customer-display').emit('customer_display_update', {
-      order_number: order.order_number,
-      customer_name: order.customer?.name || 'Walk-in Customer',
-      items: order.items,
-      total: order.total,
-      status: order.status,
-    });
+    };
+    if (branchId != null) {
+      this.server.to(this.branchRoom('branch', branchId)).emit('order_status_updated', payload);
+      this.server.to(this.branchRoom('pos', branchId)).emit('order_status_updated', payload);
+      this.server.to(this.branchRoom('kitchen', branchId)).emit('order_status_updated', payload);
+      this.server.to(this.branchRoom('customer-display', branchId)).emit('customer_display_update', {
+        branch_id: branchId,
+        order_number: order.order_number,
+        customer_name: order.customer?.name || 'Walk-in Customer',
+        items: order.items,
+        total: order.total,
+        status: order.status,
+      });
+    }
   }
 
-  /** Refund cancels the sale — POS must refresh order + payment state without reload. */
   @OnEvent('order.refunded')
   handleOrderRefunded(order: any) {
-    this.server.emit('order_status_updated', {
-      id: order.id,
-      order_number: order.order_number,
-      status: order.status,
-    });
-    this.server.to('customer-display').emit('customer_display_update', {
-      order_number: order.order_number,
-      customer_name: order.customer?.name || 'Walk-in Customer',
-      items: order.items,
-      total: order.total,
-      status: order.status,
-    });
+    this.handleOrderStatusUpdated(order);
   }
 
-  /** Admin edited items/totals on a pending order — notify POS to resync. */
   @OnEvent('order.updated')
   handleOrderBodyUpdated(order: any) {
-    this.server.emit('order_status_updated', {
+    const branchId = order.branch_id;
+    const payload = {
+      branch_id: branchId,
       id: order.id,
       order_number: order.order_number,
       status: order.status,
-    });
+    };
+    if (branchId != null) {
+      this.server.to(this.branchRoom('branch', branchId)).emit('order_status_updated', payload);
+      this.server.to(this.branchRoom('pos', branchId)).emit('order_status_updated', payload);
+    }
   }
 
   @OnEvent('delivery.created')
   handleDeliveryCreated(delivery: any) {
-    this.server.to('delivery').emit('delivery_order_created', delivery);
-    this.server.to('pos').emit('delivery_order_created', delivery);
+    const branchId = delivery.branch_id;
+    const payload = { ...delivery, branch_id: branchId };
+    if (branchId != null) {
+      this.server.to(this.branchRoom('delivery', branchId)).emit('delivery_order_created', payload);
+      this.server.to(this.branchRoom('pos', branchId)).emit('delivery_order_created', payload);
+    }
   }
 
   @OnEvent('delivery.statusUpdated')
   handleDeliveryStatusUpdated(delivery: any) {
-    this.server.emit('delivery_order_updated', {
-      id: delivery.id,
-      status: delivery.status,
-    });
+    const branchId = delivery.branch_id;
+    const payload = { branch_id: branchId, id: delivery.id, status: delivery.status };
+    if (branchId != null) {
+      this.server.to(this.branchRoom('branch', branchId)).emit('delivery_order_updated', payload);
+      this.server.to(this.branchRoom('delivery', branchId)).emit('delivery_order_updated', payload);
+      this.server.to(this.branchRoom('pos', branchId)).emit('delivery_order_updated', payload);
+    }
   }
 
-  /** Address/notes changed on a delivery row — refresh POS queue. */
   @OnEvent('delivery.updated')
   handleDeliveryMetadataUpdated(delivery: any) {
-    this.server.emit('delivery_order_updated', {
-      id: delivery.id,
-      status: delivery.status,
-    });
+    this.handleDeliveryStatusUpdated(delivery);
   }
 }

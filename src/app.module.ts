@@ -42,6 +42,8 @@ import { PromotionsModule } from './promotions/promotions.module';
 import { SettingsModule } from './settings/settings.module';
 import { PublicModule } from './public/public.module';
 import { AddonsModule } from './addons/addons.module';
+import { BranchesModule } from './branches/branches.module';
+import { ShiftsModule } from './shifts/shifts.module';
 
 @Module({
   imports: [
@@ -51,6 +53,7 @@ import { AddonsModule } from './addons/addons.module';
     }),
     EventEmitterModule.forRoot(),
     PrismaModule,
+    BranchesModule,
     AuthModule,
     UsersModule,
     ProductsModule,
@@ -68,6 +71,7 @@ import { AddonsModule } from './addons/addons.module';
     SettingsModule,
     PublicModule,
     AddonsModule,
+    ShiftsModule,
   ],
 })
 export class AppModule {}

@@ -18,20 +18,23 @@ import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { RefundOrderDto } from './dto/refund-order.dto';
 import { AppendOrderNoteDto } from './dto/append-order-note.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { BranchGuard } from '../common/guards/branch.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { CurrentBranch, BranchScopeParam } from '../common/decorators/current-branch.decorator';
+import type { BranchScope } from '../common/branch-scope';
 import { OrderStatus, OrderType } from '@prisma/client';
 
 @ApiTags('Orders')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, BranchGuard)
 @Controller('orders')
 export class OrdersController {
   constructor(private readonly ordersService: OrdersService) {}
 
   @Post()
   @ApiOperation({ summary: 'Create a new POS order' })
-  create(@Body() dto: CreateOrderDto, @CurrentUser() user: any) {
-    return this.ordersService.create(dto, user.id);
+  create(@Body() dto: CreateOrderDto, @CurrentUser() user: any, @CurrentBranch() branchId: number) {
+    return this.ordersService.create(dto, user.id, 'POS', branchId);
   }
 
   @Get()
@@ -45,6 +48,7 @@ export class OrdersController {
   @ApiQuery({ name: 'toDate', required: false, description: 'End date (YYYY-MM-DD), inclusive' })
   @ApiQuery({ name: 'search', required: false })
   findAll(
+    @BranchScopeParam() scope: BranchScope,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('status') status?: OrderStatus,
@@ -57,6 +61,7 @@ export class OrdersController {
     const pageNum = page ? parseInt(page, 10) : 1;
     const limitNum = limit ? parseInt(limit, 10) : 10;
     return this.ordersService.findAll(
+      scope,
       Number.isFinite(pageNum) ? pageNum : 1,
       Number.isFinite(limitNum) ? limitNum : 10,
       status,
@@ -70,14 +75,18 @@ export class OrdersController {
 
   @Get(':id')
   @ApiOperation({ summary: 'Get order by ID' })
-  findOne(@Param('id', ParseIntPipe) id: number) {
-    return this.ordersService.findOne(id);
+  findOne(@Param('id', ParseIntPipe) id: number, @BranchScopeParam() scope: BranchScope) {
+    return this.ordersService.findOne(id, scope.allBranches ? undefined : scope.branchId!);
   }
 
   @Patch(':id/notes')
   @ApiOperation({ summary: 'Append to order notes (e.g. Instapay payer + reference)' })
-  appendNote(@Param('id', ParseIntPipe) id: number, @Body() dto: AppendOrderNoteDto) {
-    return this.ordersService.appendOrderNote(id, dto);
+  appendNote(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: AppendOrderNoteDto,
+    @CurrentBranch() branchId: number,
+  ) {
+    return this.ordersService.appendOrderNote(id, dto, branchId);
   }
 
   @Put(':id/status')
@@ -86,8 +95,9 @@ export class OrdersController {
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateOrderStatusDto,
     @CurrentUser() user: { role?: { name: string } },
+    @CurrentBranch() branchId: number,
   ) {
-    return this.ordersService.updateStatus(id, dto, user);
+    return this.ordersService.updateStatus(id, dto, user, branchId);
   }
 
   @Put(':id')
@@ -96,8 +106,9 @@ export class OrdersController {
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateOrderDto,
     @CurrentUser() user: { role?: { name: string } },
+    @CurrentBranch() branchId: number,
   ) {
-    return this.ordersService.update(id, dto, user);
+    return this.ordersService.update(id, dto, user, branchId);
   }
 
   @Post(':id/refund')
@@ -106,7 +117,8 @@ export class OrdersController {
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: RefundOrderDto,
     @CurrentUser() user: { id: number; role?: { name: string } },
+    @CurrentBranch() branchId: number,
   ) {
-    return this.ordersService.refund(id, dto, user);
+    return this.ordersService.refund(id, dto, user, branchId);
   }
 }

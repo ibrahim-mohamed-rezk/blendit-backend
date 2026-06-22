@@ -1,10 +1,13 @@
-import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
 import { ActivityLogsService } from '../activity-logs/activity-logs.service';
+import { BranchService } from '../branches/branch.service';
 import * as bcrypt from 'bcrypt';
 import { LoginDto } from './dto/login.dto';
 import { PosSwitchDto } from './dto/pos-switch.dto';
+import { SwitchBranchDto } from './dto/switch-branch.dto';
+import { resolveAdminPageAccess, asUserBranchAccessRows } from '../users/admin-page-access.util';
 
 @Injectable()
 export class AuthService {
@@ -12,7 +15,27 @@ export class AuthService {
     private prisma: PrismaService,
     private jwtService: JwtService,
     private activityLogs: ActivityLogsService,
+    private branchService: BranchService,
   ) {}
+
+  private async buildTokenPayload(user: { id: number; email: string; role: { name: string }; branch_id: number | null }) {
+    const branches = await this.branchService.resolveBranchesForUser(user.id, user.role.name);
+    let branch_id = user.branch_id ?? branches[0]?.id ?? null;
+    if (user.role.name === 'CASHIER' && user.branch_id) {
+      branch_id = user.branch_id;
+    }
+    return {
+      sub: user.id,
+      email: user.email,
+      role: user.role.name,
+      branch_id,
+      branch_ids: user.role.name === 'SUPER_ADMIN' ? 'all' : branches.map((b) => b.id),
+    };
+  }
+
+  private signToken(payload: Record<string, unknown>) {
+    return this.jwtService.sign(payload);
+  }
 
   async login(loginDto: LoginDto) {
     const { email, password } = loginDto;
@@ -35,35 +58,104 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    const payload = { sub: user.id, email: user.email, role: user.role.name };
-    const token = this.jwtService.sign(payload);
+    const payload = await this.buildTokenPayload(user);
+    const token = this.signToken(payload);
 
-    await this.activityLogs.create({ user_id: user.id, action: 'login' });
+    await this.activityLogs.create({
+      user_id: user.id,
+      action: 'login',
+      branch_id: payload.branch_id ?? undefined,
+    });
 
+    const me = await this.getMe(user.id, payload.branch_id ?? undefined);
     const { password_hash, pin_hash, ...result } = user;
-    return { access_token: token, user: { ...result, has_pos_pin: !!pin_hash } };
+    return { access_token: token, user: { ...result, ...me, has_pos_pin: !!pin_hash } };
   }
 
-  async getMe(userId: number) {
+  async getMe(userId: number, activeBranchId?: number) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      include: {
+        role: true,
+        branch: true,
+        userBranches: { include: { branch: { select: { id: true, name: true, slug: true, address: true } } } },
+      },
+    });
+    if (!user) throw new UnauthorizedException('User not found');
+    const branches = await this.branchService.resolveBranchesForUser(user.id, user.role.name);
+    let branch_id =
+      user.role.name === 'CASHIER'
+        ? user.branch_id
+        : user.branch_id ?? branches[0]?.id ?? null;
+
+    if (activeBranchId != null && user.role.name !== 'CASHIER') {
+      if (user.role.name === 'SUPER_ADMIN' || branches.some((b) => b.id === activeBranchId)) {
+        branch_id = activeBranchId;
+      }
+    }
+
+    const branchRows = asUserBranchAccessRows(user.userBranches);
+
+    const page_access = resolveAdminPageAccess(
+      user.role.name,
+      user.page_access,
+      branchRows,
+      branch_id,
+    );
+
+    const branch_assignments = branchRows.map((ub) => ({
+      branch_id: ub.branch_id,
+      branch_name: ub.branch?.name,
+      page_access: Array.isArray(ub.page_access) ? (ub.page_access as string[]) : [],
+    }));
+
+    const { password_hash, pin_hash, userBranches: _ub, ...result } = user;
+    return {
+      ...result,
+      branch_id,
+      branches,
+      page_access,
+      branch_assignments,
+      has_pos_pin: !!pin_hash,
+    };
+  }
+
+  async switchBranch(userId: number, dto: SwitchBranchDto) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       include: { role: true },
     });
     if (!user) throw new UnauthorizedException('User not found');
-    const { password_hash, pin_hash, ...result } = user;
-    return { ...result, has_pos_pin: !!pin_hash };
+    if (user.role.name === 'CASHIER') {
+      throw new ForbiddenException('Cashiers cannot switch branches');
+    }
+    await this.branchService.assertBranchAccess(user, dto.branch_id);
+    const payload = await this.buildTokenPayload({ ...user, branch_id: dto.branch_id });
+    payload.branch_id = dto.branch_id;
+    const token = this.signToken(payload);
+    const me = await this.getMe(userId, dto.branch_id);
+    return { access_token: token, user: me };
   }
 
-  async getPosSwitchUsers() {
+  async getPosSwitchUsers(branchId?: number) {
+    const where: Record<string, unknown> = {
+      is_active: true,
+      role: { name: { in: ['CASHIER', 'ADMIN', 'SUPER_ADMIN'] } },
+      pin_hash: { not: null },
+    };
+    if (branchId != null) {
+      where.OR = [
+        { branch_id: branchId },
+        { role: { name: 'SUPER_ADMIN' } },
+        { userBranches: { some: { branch_id: branchId } } },
+      ];
+    }
     const users = await this.prisma.user.findMany({
-      where: {
-        is_active: true,
-        role: { name: { in: ['CASHIER', 'ADMIN', 'SUPER_ADMIN'] } },
-        pin_hash: { not: null },
-      },
+      where,
       select: {
         id: true,
         name: true,
+        branch_id: true,
         role: { select: { name: true } },
         pin_hash: true,
       },
@@ -93,11 +185,16 @@ export class AuthService {
       throw new UnauthorizedException('Invalid PIN');
     }
 
-    const payload = { sub: user.id, email: user.email, role: user.role.name };
-    const token = this.jwtService.sign(payload);
-    await this.activityLogs.create({ user_id: user.id, action: 'pos_switch_login' });
+    const payload = await this.buildTokenPayload(user);
+    const token = this.signToken(payload);
+    await this.activityLogs.create({
+      user_id: user.id,
+      action: 'pos_switch_login',
+      branch_id: payload.branch_id ?? undefined,
+    });
 
+    const me = await this.getMe(user.id, payload.branch_id ?? undefined);
     const { password_hash, pin_hash, ...result } = user;
-    return { access_token: token, user: { ...result, has_pos_pin: !!pin_hash } };
+    return { access_token: token, user: { ...result, ...me, has_pos_pin: !!pin_hash } };
   }
 }

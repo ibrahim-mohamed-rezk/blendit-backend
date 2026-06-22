@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
 import { UpdateStoreSettingsDto } from './dto/update-store-settings.dto';
@@ -38,10 +38,6 @@ const DEFAULT_LOYALTY = {
 export class SettingsService {
   constructor(private prisma: PrismaService) {}
 
-  /**
-   * Merge DTO without letting `undefined` overwrite existing JSON (Nest DTO instances often
-   * have undefined for every unset field — spreading them clears e.g. customerDisplayVideoPath).
-   */
   private pickDefinedStorePatch(dto: UpdateStoreSettingsDto): Record<string, unknown> {
     const keys: (keyof UpdateStoreSettingsDto)[] = [
       'name',
@@ -63,18 +59,18 @@ export class SettingsService {
     return patch;
   }
 
-  private async getByKey(key: string): Promise<Record<string, unknown> | null> {
-    const row = await this.prisma.setting.findUnique({ where: { key } });
+  private async getByKey(branchId: number, key: string): Promise<Record<string, unknown> | null> {
+    const row = await this.prisma.setting.findUnique({
+      where: { branch_id_key: { branch_id: branchId, key } },
+    });
     return row ? (row.value as Record<string, unknown>) : null;
   }
 
-  /** Raw merged store JSON (includes `managerPinHash` — never send to clients). */
-  private async getStoreMerged(): Promise<Record<string, unknown>> {
-    const store = await this.getByKey('store');
+  private async getStoreMerged(branchId: number): Promise<Record<string, unknown>> {
+    const store = await this.getByKey(branchId, 'store');
     return { ...DEFAULT_STORE, ...(store ?? {}) };
   }
 
-  /** Strips secret hash; exposes `hasManagerPin` for POS/admin UI. */
   sanitizeStoreForClient(store: Record<string, unknown>): Record<string, unknown> {
     const { managerPinHash, ...rest } = store;
     const hash = managerPinHash as string | undefined;
@@ -84,49 +80,79 @@ export class SettingsService {
     };
   }
 
-  /** Returns true when no PIN is configured, or when the plain PIN matches the hash. */
-  async verifyManagerPin(plain: string | undefined): Promise<boolean> {
-    const store = await this.getStoreMerged();
+  async verifyManagerPin(branchId: number, plain: string | undefined): Promise<boolean> {
+    const store = await this.getStoreMerged(branchId);
     const hash = store.managerPinHash as string | undefined;
     if (!hash || String(hash).trim() === '') return true;
     if (plain == null || String(plain).trim() === '') return false;
     return bcrypt.compare(String(plain).trim(), hash);
   }
 
-  async isManagerPinConfigured(): Promise<boolean> {
-    const store = await this.getStoreMerged();
+  async isManagerPinConfigured(branchId: number): Promise<boolean> {
+    const store = await this.getStoreMerged(branchId);
     const hash = store.managerPinHash as string | undefined;
     return typeof hash === 'string' && hash.length > 0;
   }
 
-  private async setByKey(key: string, value: object): Promise<Record<string, unknown>> {
+  /**
+   * Authorize a sensitive POS action (refund / cancel). Fail-closed:
+   * - When a manager PIN is configured, a valid PIN is always required.
+   * - When no PIN is configured, the action is restricted to managers by role
+   *   so a cashier can never perform it unguarded (previously this returned
+   *   `true`, letting any cashier refund/cancel without authorization).
+   * Throws ForbiddenException when not authorized.
+   */
+  async assertManagerAuthorization(
+    branchId: number,
+    role: string | undefined,
+    plain: string | undefined,
+  ): Promise<void> {
+    const store = await this.getStoreMerged(branchId);
+    const hash = store.managerPinHash as string | undefined;
+    const configured = typeof hash === 'string' && hash.trim() !== '';
+    if (!configured) {
+      if (role === 'ADMIN' || role === 'SUPER_ADMIN') return;
+      throw new ForbiddenException(
+        'A manager PIN must be configured before this action can be authorized',
+      );
+    }
+    const provided = plain == null ? '' : String(plain).trim();
+    if (provided === '' || !(await bcrypt.compare(provided, hash as string))) {
+      throw new ForbiddenException('Invalid manager PIN');
+    }
+  }
+
+  private async setByKey(branchId: number, key: string, value: object): Promise<Record<string, unknown>> {
     const updated = await this.prisma.setting.upsert({
-      where: { key },
-      create: { key, value: value as any },
+      where: { branch_id_key: { branch_id: branchId, key } },
+      create: { branch_id: branchId, key, value: value as any },
       update: { value: value as any },
     });
     return updated.value as Record<string, unknown>;
   }
 
-  async getAll(): Promise<{ store: Record<string, unknown>; loyalty: Record<string, unknown> }> {
-    const [storeMerged, loyalty] = await Promise.all([this.getStoreMerged(), this.getByKey('loyalty')]);
+  async getAll(branchId: number): Promise<{ store: Record<string, unknown>; loyalty: Record<string, unknown> }> {
+    const [storeMerged, loyalty] = await Promise.all([
+      this.getStoreMerged(branchId),
+      this.getByKey(branchId, 'loyalty'),
+    ]);
     return {
       store: this.sanitizeStoreForClient(storeMerged),
       loyalty: loyalty ?? DEFAULT_LOYALTY,
     };
   }
 
-  async getStore(): Promise<Record<string, unknown>> {
-    return this.sanitizeStoreForClient(await this.getStoreMerged());
+  async getStore(branchId: number): Promise<Record<string, unknown>> {
+    return this.sanitizeStoreForClient(await this.getStoreMerged(branchId));
   }
 
-  async getLoyalty(): Promise<Record<string, unknown>> {
-    const loyalty = await this.getByKey('loyalty');
+  async getLoyalty(branchId: number): Promise<Record<string, unknown>> {
+    const loyalty = await this.getByKey(branchId, 'loyalty');
     return loyalty ?? DEFAULT_LOYALTY;
   }
 
-  async updateStore(dto: UpdateStoreSettingsDto): Promise<Record<string, unknown>> {
-    const current = await this.getStoreMerged();
+  async updateStore(branchId: number, dto: UpdateStoreSettingsDto): Promise<Record<string, unknown>> {
+    const current = await this.getStoreMerged(branchId);
     const patch = this.pickDefinedStorePatch(dto);
     const merged: Record<string, unknown> = { ...current, ...patch };
 
@@ -145,11 +171,9 @@ export class SettingsService {
     if (patch.customerDisplayVideoUrl !== undefined) {
       const nextUrl = String(patch.customerDisplayVideoUrl).trim();
       if (nextUrl !== '') {
-        // Switching to an external URL: use URL, clear legacy local path.
         merged.customerDisplayVideoPath = '';
         merged.customerDisplayVideoUrl = nextUrl;
       } else {
-        // Empty URL clears URL text while keeping any existing path value.
         merged.customerDisplayVideoUrl = '';
       }
     }
@@ -158,18 +182,17 @@ export class SettingsService {
       merged.customerDisplayVideoUrl = '';
     }
 
-    const saved = await this.setByKey('store', merged);
+    const saved = await this.setByKey(branchId, 'store', merged);
     return this.sanitizeStoreForClient(saved as Record<string, unknown>);
   }
 
-  /** Public payload for `/display` — no secrets */
-  async getCustomerDisplayPublic(): Promise<{
+  async getCustomerDisplayPublic(branchId: number): Promise<{
     storeName: string;
     tagline: string;
     videoUrl: string | null;
     videoPath: string | null;
   }> {
-    const store = await this.getStore();
+    const store = await this.getStore(branchId);
     const name = (store.name as string) || 'BLENDiT';
     const tagline = (store.customerDisplayTagline as string) || 'Your order';
     const url = (store.customerDisplayVideoUrl as string)?.trim() || null;
@@ -182,10 +205,12 @@ export class SettingsService {
     };
   }
 
-  /** Store uploaded video as a path under `/uploads/...` (clears external URL). */
-  async setCustomerDisplayVideoLocalPath(publicPath: string): Promise<Record<string, unknown>> {
-    const current = await this.getStoreMerged();
-    const saved = await this.setByKey('store', {
+  async setCustomerDisplayVideoLocalPath(
+    branchId: number,
+    publicPath: string,
+  ): Promise<Record<string, unknown>> {
+    const current = await this.getStoreMerged(branchId);
+    const saved = await this.setByKey(branchId, 'store', {
       ...current,
       customerDisplayVideoPath: publicPath.trim(),
       customerDisplayVideoUrl: '',
@@ -193,9 +218,9 @@ export class SettingsService {
     return this.sanitizeStoreForClient(saved as Record<string, unknown>);
   }
 
-  async updateLoyalty(dto: UpdateLoyaltySettingsDto): Promise<Record<string, unknown>> {
-    const current = await this.getLoyalty();
+  async updateLoyalty(branchId: number, dto: UpdateLoyaltySettingsDto): Promise<Record<string, unknown>> {
+    const current = await this.getLoyalty(branchId);
     const merged = { ...current, ...dto };
-    return this.setByKey('loyalty', merged);
+    return this.setByKey(branchId, 'loyalty', merged);
   }
 }

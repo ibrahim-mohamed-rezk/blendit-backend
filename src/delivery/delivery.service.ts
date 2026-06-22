@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -10,6 +9,7 @@ import { UpdateDeliveryStatusDto, CreateDeliveryOrderDto, UpdateDeliveryOrderDto
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { OrdersService } from '../orders/orders.service';
 import { SettingsService } from '../settings/settings.service';
+import { BranchScope, orderBranchWhere } from '../common/branch-scope';
 
 @Injectable()
 export class DeliveryService {
@@ -61,8 +61,11 @@ export class DeliveryService {
   }
 
   async createDeliveryOrder(dto: CreateDeliveryOrderDto) {
+    const saleOrder = await this.prisma.order.findUnique({ where: { id: dto.order_id } });
+    if (!saleOrder) throw new NotFoundException(`Order #${dto.order_id} not found`);
     const delivery = await this.prisma.deliveryOrder.create({
       data: {
+        branch_id: saleOrder.branch_id,
         order_id: dto.order_id,
         customer_id: dto.customer_id,
         address: dto.address,
@@ -76,6 +79,7 @@ export class DeliveryService {
   }
 
   async findAll(
+    scope: BranchScope,
     page = 1,
     limit = 10,
     status?: string,
@@ -84,7 +88,7 @@ export class DeliveryService {
     toDate?: string,
   ) {
     const skip = (page - 1) * limit;
-    const where: Prisma.DeliveryOrderWhereInput = {};
+    const where: Prisma.DeliveryOrderWhereInput = { ...orderBranchWhere(scope) };
     if (status) where.status = status as DeliveryStatus;
     const parseYmdStart = (ymd: string): Date | undefined => {
       const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd.trim());
@@ -120,7 +124,11 @@ export class DeliveryService {
     const [data, total] = await this.prisma.$transaction([
       this.prisma.deliveryOrder.findMany({
         where, skip, take: limit,
-        include: { order: { include: { items: { include: { product: true } }, transactions: true } }, customer: true },
+        include: {
+          order: { include: { items: { include: { product: true } }, transactions: true } },
+          customer: true,
+          ...(scope.allBranches ? { branch: { select: { id: true, name: true, slug: true } } } : {}),
+        },
         orderBy: { created_at: 'desc' },
       }),
       this.prisma.deliveryOrder.count({ where }),
@@ -128,9 +136,9 @@ export class DeliveryService {
     return { data, total, page, limit };
   }
 
-  async findOne(id: number) {
-    const order = await this.prisma.deliveryOrder.findUnique({
-      where: { id },
+  async findOne(id: number, branchId?: number) {
+    const order = await this.prisma.deliveryOrder.findFirst({
+      where: { id, ...(branchId != null ? { branch_id: branchId } : {}) },
       include: { order: { include: { items: { include: { product: true } }, transactions: true } }, customer: true },
     });
     if (!order) throw new NotFoundException(`Delivery order #${id} not found`);
@@ -155,8 +163,9 @@ export class DeliveryService {
     id: number,
     dto: UpdateDeliveryStatusDto,
     user?: { role?: { name: string } },
+    branchId?: number,
   ) {
-    const existing = await this.findOne(id);
+    const existing = await this.findOne(id, branchId);
     const cur = existing.status as DeliveryStatus;
     if (cur === DeliveryStatus.COMPLETED || cur === DeliveryStatus.CANCELLED) {
       if (dto.status === cur) {
@@ -174,8 +183,11 @@ export class DeliveryService {
       if (!dto.cancellation_reason?.trim()) {
         throw new BadRequestException('Cancellation reason is required');
       }
-      const ok = await this.settingsService.verifyManagerPin(dto.manager_pin);
-      if (!ok) throw new ForbiddenException('Invalid manager PIN');
+      await this.settingsService.assertManagerAuthorization(
+        existing.branch_id,
+        user?.role?.name,
+        dto.manager_pin,
+      );
     }
 
     let deliveryNotes: string | undefined;
@@ -206,14 +218,15 @@ export class DeliveryService {
     });
     if (refreshed?.status === OrderStatus.COMPLETED) {
       await this.ordersService.tryAwardDeferredLoyaltyPoints(updated.order_id);
+      await this.ordersService.tryDeductStockForOrder(updated.order_id);
     }
 
     this.eventEmitter.emit('delivery.statusUpdated', updated);
     return updated;
   }
 
-  async update(id: number, dto: UpdateDeliveryOrderDto) {
-    await this.findOne(id);
+  async update(id: number, dto: UpdateDeliveryOrderDto, branchId?: number) {
+    await this.findOne(id, branchId);
     const data: { address?: string; notes?: string } = {};
     if (dto.address !== undefined) data.address = dto.address;
     if (dto.notes !== undefined) data.notes = dto.notes;

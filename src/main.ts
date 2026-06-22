@@ -12,7 +12,7 @@ import { TransformInterceptor } from './common/interceptors/transform.intercepto
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   const configService = app.get(ConfigService);
-  const wapilotToken =
+  const wapilotToken = 
     normalizeWapilotApiToken(configService.get<string>('WAPILOT_API_TOKEN')) ??
     normalizeWapilotApiToken(configService.get<string>('WAPILOT_API_KEY'));
   if (wapilotToken) {
@@ -33,11 +33,11 @@ async function bootstrap() {
   app.useStaticAssets(uploadsDir, { prefix: '/uploads/' });
   console.log(`📁 Uploads directory: ${uploadsDir} (served at /uploads/)`);
 
-  // CORS
+  // CORS — accept all origins
   app.enableCors({
     origin: '*',
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
-    allowedHeaders: 'Content-Type, Authorization',
+    allowedHeaders: 'Content-Type, Authorization, X-Branch-Id, X-Branch-All',
   });
 
   // Global Validation Pipe (forbidNonWhitelisted: false so query params like ?status= work on GET)
@@ -76,7 +76,7 @@ async function bootstrap() {
     .addTag('Transactions', 'Payment transactions')
     .addTag('Loyalty', 'Customer loyalty points')
     .addTag('Inventory', 'Inventory & stock management')
-    .addTag('Activity Logs', 'System activity audit log')
+    .addTag('Activity Logs', 'System activity audit log') 
     .addTag('Settings', 'Store and loyalty settings')
     .addTag('Analytics', 'Sales & performance analytics')
     .build();

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { DeliveryStatus, OrderStatus, TransactionStatus } from '@prisma/client';
+import { BranchScope, orderBranchWhere } from '../common/branch-scope';
 
 @Injectable()
 export class AnalyticsService {
@@ -36,12 +37,12 @@ export class AnalyticsService {
    * `created_at` falls in the range, for orders that are COMPLETED. Uses each transaction amount
    * (split payments, corrections) rather than `order.total`, so totals match payment history.
    */
-  async getSalesSummary(period: 'daily' | 'weekly' | 'monthly') {
+  async getSalesSummary(period: 'daily' | 'weekly' | 'monthly', scope: BranchScope) {
     const { start, end } = this.getDateRange(period);
     const txnWhere = {
       status: TransactionStatus.COMPLETED,
       created_at: { gte: start, lte: end },
-      order: { status: OrderStatus.COMPLETED },
+      order: { status: OrderStatus.COMPLETED, ...orderBranchWhere(scope) },
     };
 
     const byOrder = await this.prisma.transaction.groupBy({
@@ -57,17 +58,20 @@ export class AnalyticsService {
     return { period, totalRevenue, totalOrders, avgOrderValue };
   }
 
-  /** All-time KPIs for admin dashboard (avoids client-side pagination mistakes). */
-  async getLifetimeSummary() {
+  /** Branch KPIs for admin dashboard. */
+  async getLifetimeSummary(scope: BranchScope) {
+    const branchFilter = orderBranchWhere(scope);
     const [orderAgg, customerCount, pendingDelivery] = await Promise.all([
       this.prisma.order.aggregate({
-        where: { status: OrderStatus.COMPLETED },
+        where: { status: OrderStatus.COMPLETED, ...branchFilter },
         _count: { id: true },
         _sum: { total: true },
         _avg: { total: true },
       }),
       this.prisma.customer.count(),
-      this.prisma.deliveryOrder.count({ where: { status: DeliveryStatus.NEW } }),
+      this.prisma.deliveryOrder.count({
+        where: { status: DeliveryStatus.NEW, ...branchFilter },
+      }),
     ]);
     const totalCompletedOrders = orderAgg._count.id;
     const totalRevenue = orderAgg._sum.total ?? 0;
@@ -81,9 +85,10 @@ export class AnalyticsService {
     };
   }
 
-  async getTopProducts(limit = 10) {
+  async getTopProducts(scope: BranchScope, limit = 10) {
+    const branchFilter = orderBranchWhere(scope);
     const items = await this.prisma.orderItem.findMany({
-      where: { order: { status: OrderStatus.COMPLETED } },
+      where: { order: { status: OrderStatus.COMPLETED, ...branchFilter } },
       select: { product_id: true, quantity: true, price: true },
     });
     const rolled = new Map<number, { qty: number; revenue: number; lines: number }>();
@@ -96,7 +101,12 @@ export class AnalyticsService {
     }
     const sorted = [...rolled.entries()].sort((a, b) => b[1].qty - a[1].qty).slice(0, limit);
     const productIds = sorted.map(([id]) => id);
-    const products = await this.prisma.product.findMany({ where: { id: { in: productIds } } });
+    const products = await this.prisma.product.findMany({
+      where: {
+        id: { in: productIds },
+        ...(scope.allBranches ? {} : { branch_id: scope.branchId! }),
+      },
+    });
     const productMap = new Map(products.map((p) => [p.id, p]));
     return sorted.map(([productId, agg]) => ({
       product: productMap.get(productId) ?? null,
@@ -106,24 +116,24 @@ export class AnalyticsService {
     }));
   }
 
-  async getPaymentBreakdown() {
+  async getPaymentBreakdown(scope: BranchScope) {
     const result = await this.prisma.transaction.groupBy({
       by: ['payment_method'],
       where: {
         status: TransactionStatus.COMPLETED,
-        order: { status: OrderStatus.COMPLETED },
+        order: { status: OrderStatus.COMPLETED, ...orderBranchWhere(scope) },
       },
       _count: { id: true },
       _sum: { amount: true },
     });
     return result.map((r) => ({
       method: r.payment_method,
-      count: r._count.id,
-      total: r._sum.amount ?? 0,
+      count: r._count && typeof r._count === 'object' ? r._count.id : 0,
+      total: r._sum?.amount ?? 0,
     }));
   }
 
-  async getRevenueTrends(days = 30) {
+  async getRevenueTrends(scope: BranchScope, days = 30) {
     const n = Math.min(Math.max(Number(days) || 30, 1), 366);
     const end = new Date();
     const start = new Date(end);
@@ -142,7 +152,7 @@ export class AnalyticsService {
       where: {
         status: TransactionStatus.COMPLETED,
         created_at: { gte: start, lte: end },
-        order: { status: OrderStatus.COMPLETED },
+        order: { status: OrderStatus.COMPLETED, ...orderBranchWhere(scope) },
       },
       select: { amount: true, created_at: true, order_id: true },
       orderBy: { created_at: 'asc' },
@@ -161,13 +171,13 @@ export class AnalyticsService {
     return Object.values(buckets).sort((a, b) => a.date.localeCompare(b.date));
   }
 
-  async getClientsPerHour(date?: string) {
+  async getClientsPerHour(scope: BranchScope, date?: string) {
     const base = date ? new Date(`${date}T12:00:00`) : new Date();
     const start = new Date(base.getFullYear(), base.getMonth(), base.getDate(), 0, 0, 0, 0);
     const end = new Date(base.getFullYear(), base.getMonth(), base.getDate(), 23, 59, 59, 999);
 
     const orders = await this.prisma.order.findMany({
-      where: { created_at: { gte: start, lte: end } },
+      where: { ...orderBranchWhere(scope), created_at: { gte: start, lte: end } },
       select: { created_at: true },
     });
 

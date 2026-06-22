@@ -7,7 +7,7 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
-import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { CreateOrderDto } from '../orders/dto/create-order.dto';
 import { ProductsService } from '../products/products.service';
 import { CustomersService } from '../customers/customers.service';
@@ -19,6 +19,7 @@ import { WebsitePhoneAuthService } from './website-phone-auth.service';
 import { SendPhoneOtpDto } from './dto/send-phone-otp.dto';
 import { VerifyPhoneOtpDto } from './dto/verify-phone-otp.dto';
 import { AddonsService } from '../addons/addons.service';
+import { BranchService } from '../branches/branch.service';
 
 @ApiTags('Public')
 @Controller('public')
@@ -31,24 +32,86 @@ export class PublicController {
     private readonly loyaltyTiersService: LoyaltyTiersService,
     private readonly websitePhoneAuthService: WebsitePhoneAuthService,
     private readonly addonsService: AddonsService,
+    private readonly branchService: BranchService,
   ) {}
+
+  @Get('branches')
+  @ApiOperation({ summary: 'List active branches for website branch picker' })
+  getBranches() {
+    return this.branchService.listActiveBranches();
+  }
+
+  @Get('branch')
+  @ApiOperation({ summary: 'Get one active branch by URL slug' })
+  @ApiQuery({ name: 'slug', required: true })
+  async getBranchBySlug(@Query('slug') slug?: string) {
+    if (!slug?.trim()) {
+      throw new BadRequestException('slug is required');
+    }
+    const branch = await this.branchService.findBySlug(slug.trim());
+    return {
+      id: branch.id,
+      name: branch.name,
+      slug: branch.slug,
+      address: branch.address,
+      phone: branch.phone,
+      delivery_address_prefix: branch.delivery_address_prefix,
+      is_active: branch.is_active,
+    };
+  }
+
+  private async resolveBranchId(branchSlug?: string, branchIdQuery?: string, bodyBranchId?: number): Promise<number> {
+    if (bodyBranchId != null && Number.isFinite(bodyBranchId)) {
+      const branch = await this.branchService.findById(bodyBranchId);
+      return branch.id;
+    }
+    if (branchSlug?.trim()) {
+      const branch = await this.branchService.findBySlug(branchSlug.trim());
+      return branch.id;
+    }
+    if (branchIdQuery?.trim()) {
+      const id = Number(branchIdQuery);
+      if (Number.isFinite(id)) {
+        const branch = await this.branchService.findById(id);
+        return branch.id;
+      }
+    }
+    const branches = await this.branchService.listActiveBranches();
+    if (branches.length === 0) throw new NotFoundException('No active branches');
+    return branches[0].id;
+  }
 
   @Get('addons')
   @ApiOperation({ summary: 'Active add-ons for website checkout / POS' })
-  getPublicAddons() {
-    return this.addonsService.findAllActive();
+  @ApiQuery({ name: 'branch_slug', required: false })
+  @ApiQuery({ name: 'branch_id', required: false, type: Number })
+  async getPublicAddons(
+    @Query('branch_slug') branchSlug?: string,
+    @Query('branch_id') branchIdQuery?: string,
+  ) {
+    const branchId = await this.resolveBranchId(branchSlug, branchIdQuery);
+    return this.addonsService.findAllActive(branchId);
   }
 
   @Get('menu')
   @ApiOperation({ summary: 'Public menu: categories + available products' })
+  @ApiQuery({ name: 'branch_slug', required: false })
+  @ApiQuery({ name: 'branch_id', required: false, type: Number })
   async getMenu(
     @Query('categoryId') categoryId?: string,
     @Query('search') search?: string,
+    @Query('branch_slug') branchSlug?: string,
+    @Query('branch_id') branchIdQuery?: string,
   ) {
+    const branchId = await this.resolveBranchId(branchSlug, branchIdQuery);
     const parsedCategoryId =
       categoryId && categoryId.trim() !== '' ? Number(categoryId) : undefined;
-    const categories = await this.productsService.findAllCategories();
+    const categories = await this.productsService.findAllCategories({
+      branchId,
+      allBranches: false,
+    });
     const products = await this.productsService.findAll(
+      { branchId, allBranches: false },
       1,
       200,
       Number.isFinite(parsedCategoryId) ? parsedCategoryId : undefined,
@@ -137,15 +200,28 @@ export class PublicController {
 
   @Post('orders')
   @ApiOperation({ summary: 'Public website order creation' })
-  createOrder(@Body() dto: CreateOrderDto) {
-    return this.ordersService.create(dto, undefined, 'PUBLIC');
+  @ApiQuery({ name: 'branch_slug', required: false })
+  async createOrder(
+    @Body() dto: CreateOrderDto,
+    @Query('branch_slug') branchSlug?: string,
+  ) {
+    const branchId = await this.resolveBranchId(branchSlug, undefined, dto.branch_id);
+    return this.ordersService.create(dto, undefined, 'PUBLIC', branchId);
   }
 
   @Get('loyalty/gifts')
   @ApiOperation({ summary: 'Public loyalty gifts for website redeem section (synced with POS)' })
-  getPublicLoyaltyGifts(@Query('active') active?: string) {
+  @ApiQuery({ name: 'active', required: false })
+  @ApiQuery({ name: 'branch_slug', required: false })
+  @ApiQuery({ name: 'branch_id', required: false, type: Number })
+  async getPublicLoyaltyGifts(
+    @Query('active') active?: string,
+    @Query('branch_slug') branchSlug?: string,
+    @Query('branch_id') branchIdQuery?: string,
+  ) {
     const activeOnly = active !== 'false';
-    return this.loyaltyGiftsService.findAll(activeOnly);
+    const branchId = await this.resolveBranchId(branchSlug, branchIdQuery);
+    return this.loyaltyGiftsService.findAll(branchId, activeOnly);
   }
 
   @Get('loyalty/tiers')

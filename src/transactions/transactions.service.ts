@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Prisma, TransactionStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TransactionsQueryDto } from './dto/transactions-query.dto';
+import { BranchScope, orderBranchWhere } from '../common/branch-scope';
 
 function mapQueryStatus(raw?: string): TransactionStatus | undefined {
   if (!raw?.trim()) return undefined;
@@ -16,16 +17,25 @@ function mapQueryStatus(raw?: string): TransactionStatus | undefined {
   return map[key];
 }
 
+function normalizeTransactionAmount(status: TransactionStatus, amount: number): number {
+  if (status === TransactionStatus.REFUNDED) return -Math.abs(amount);
+  return amount;
+}
+
 @Injectable()
 export class TransactionsService {
   constructor(private prisma: PrismaService) {}
 
-  async findAll(dto: TransactionsQueryDto) {
+  async findAll(dto: TransactionsQueryDto, scope: BranchScope) {
     const page = dto.page ?? 1;
     const limit = dto.limit ?? 10;
     const skip = (page - 1) * limit;
 
     const parts: Prisma.TransactionWhereInput[] = [];
+    const branchFilter = orderBranchWhere(scope);
+    if (Object.keys(branchFilter).length > 0) {
+      parts.push({ order: branchFilter });
+    }
 
     const parseYmdStart = (ymd: string): Date | undefined => {
       const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd.trim());
@@ -194,7 +204,10 @@ export class TransactionsService {
     });
 
     return {
-      data,
+      data: data.map((row) => ({
+        ...row,
+        amount: normalizeTransactionAmount(row.status, row.amount),
+      })),
       total,
       page,
       limit,
@@ -206,10 +219,19 @@ export class TransactionsService {
     };
   }
 
-  async findOne(id: number) {
-    return this.prisma.transaction.findUnique({
-      where: { id },
+  async findOne(id: number, scope: BranchScope) {
+    const branchFilter = orderBranchWhere(scope);
+    const row = await this.prisma.transaction.findFirst({
+      where: {
+        id,
+        ...(Object.keys(branchFilter).length > 0 ? { order: branchFilter } : {}),
+      },
       include: { order: { include: { items: { include: { product: true } } } }, user: true },
     });
+    if (!row) return null;
+    return {
+      ...row,
+      amount: normalizeTransactionAmount(row.status, row.amount),
+    };
   }
 }

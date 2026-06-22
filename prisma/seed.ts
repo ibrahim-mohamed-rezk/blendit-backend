@@ -9,6 +9,18 @@ const prisma = new PrismaClient();
 async function main() {
   console.log('Seeding database...');
 
+  // 0. Default branch
+  const mainBranch = await prisma.branch.upsert({
+    where: { slug: 'main' },
+    update: {},
+    create: {
+      name: 'Main',
+      slug: 'main',
+      delivery_address_prefix: 'District 5, ',
+    },
+  });
+  console.log(`Branch "${mainBranch.name}" (id=${mainBranch.id}) ready.`);
+
   // 1. Create Roles
   const roles = ['SUPER_ADMIN', 'ADMIN', 'CASHIER'];
   for (const roleName of roles) {
@@ -45,12 +57,28 @@ async function main() {
         email: adminEmail,
         password_hash: passwordHash,
         role_id: superAdminRole.id,
+        branch_id: mainBranch.id,
       },
     });
     console.log(`Super Admin created!`);
     console.log(`Email: ${adminEmail} | Password: ${process.env.SEED_ADMIN_PASSWORD ? '(from env)' : adminPassword}`);
   } else {
+    if (!existingAdmin.branch_id) {
+      await prisma.user.update({
+        where: { id: existingAdmin.id },
+        data: { branch_id: mainBranch.id },
+      });
+    }
     console.log('Super Admin already exists.');
+  }
+
+  const superAdmin = await prisma.user.findUnique({ where: { email: adminEmail } });
+  if (superAdmin) {
+    await prisma.userBranch.upsert({
+      where: { user_id_branch_id: { user_id: superAdmin.id, branch_id: mainBranch.id } },
+      update: {},
+      create: { user_id: superAdmin.id, branch_id: mainBranch.id },
+    });
   }
 
   // 3. Create sample Categories
@@ -58,9 +86,9 @@ async function main() {
   const categoryIds: Record<string, number> = {};
   for (const catName of categoryNames) {
     const cat = await prisma.category.upsert({
-      where: { name: catName },
+      where: { branch_id_name: { branch_id: mainBranch.id, name: catName } },
       update: {},
-      create: { name: catName },
+      create: { name: catName, branch_id: mainBranch.id },
     });
     categoryIds[catName] = cat.id;
   }
@@ -79,7 +107,9 @@ async function main() {
   for (const p of products) {
     const catId = categoryIds[p.category];
     if (!catId) continue;
-    const existing = await prisma.product.findFirst({ where: { name: p.name } });
+    const existing = await prisma.product.findFirst({
+      where: { name: p.name, branch_id: mainBranch.id },
+    });
     if (!existing) {
       await prisma.product.create({
         data: {
@@ -87,6 +117,7 @@ async function main() {
           description: p.description,
           price: p.price,
           category_id: catId,
+          branch_id: mainBranch.id,
           ingredients: [],
           is_available: true,
         },
@@ -94,6 +125,34 @@ async function main() {
     }
   }
   console.log('Products created or verified.');
+
+  // 5. Default settings per branch
+  const storeDefaults = {
+    name: 'BLENDiT',
+    address: '123 Flagship Street, New Cairo, Egypt',
+    phone: '+20 111 638 4065',
+    email: 'hello@blendit.com',
+    taxRate: 10,
+    currency: 'EGP',
+  };
+  await prisma.setting.upsert({
+    where: { branch_id_key: { branch_id: mainBranch.id, key: 'store' } },
+    update: {},
+    create: { branch_id: mainBranch.id, key: 'store', value: storeDefaults },
+  });
+  await prisma.setting.upsert({
+    where: { branch_id_key: { branch_id: mainBranch.id, key: 'loyalty' } },
+    update: {},
+    create: {
+      branch_id: mainBranch.id,
+      key: 'loyalty',
+      value: {
+        pointsPerCurrency: 1,
+        currencyValuePerPoint: 0.5,
+        minimumPointsToRedeem: 100,
+      },
+    },
+  });
 
   console.log('Seeding complete!');
 }

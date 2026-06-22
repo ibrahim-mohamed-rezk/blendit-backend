@@ -18,9 +18,12 @@ import { SettingsService } from './settings.service';
 import { UpdateStoreSettingsDto } from './dto/update-store-settings.dto';
 import { UpdateLoyaltySettingsDto } from './dto/update-loyalty-settings.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { BranchGuard } from '../common/guards/branch.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
+import { CurrentBranch } from '../common/decorators/current-branch.decorator';
 import { LocalUploadService } from '../common/services/local-upload.service';
+import { Query } from '@nestjs/common';
 
 type UploadedMemoryFile = {
   buffer: Buffer;
@@ -38,32 +41,34 @@ export class SettingsController {
 
   @Get('customer-display')
   @ApiOperation({ summary: 'Public: customer display screen (video + copy)' })
-  getCustomerDisplay() {
-    return this.settingsService.getCustomerDisplayPublic();
+  getCustomerDisplay(@Query('branch_id') branchId?: string) {
+    const id = branchId ? Number(branchId) : NaN;
+    if (!Number.isFinite(id)) throw new BadRequestException('branch_id query param is required');
+    return this.settingsService.getCustomerDisplayPublic(id);
   }
 
   @Get()
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('SUPER_ADMIN', 'ADMIN')
+  @UseGuards(JwtAuthGuard, BranchGuard, RolesGuard)
+  @Roles('SUPER_ADMIN', 'ADMIN', 'CASHIER')
   @ApiOperation({ summary: 'Get all settings (store + loyalty)' })
-  getAll() {
-    return this.settingsService.getAll();
+  getAll(@CurrentBranch() branchId: number) {
+    return this.settingsService.getAll(branchId);
   }
 
   @Put('store')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, BranchGuard, RolesGuard)
   @Roles('SUPER_ADMIN', 'ADMIN')
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: false, transform: true }))
   @ApiOperation({ summary: 'Update store settings' })
-  updateStore(@Body() dto: UpdateStoreSettingsDto) {
-    return this.settingsService.updateStore(dto);
+  updateStore(@Body() dto: UpdateStoreSettingsDto, @CurrentBranch() branchId: number) {
+    return this.settingsService.updateStore(branchId, dto);
   }
 
   @Post('customer-display/video')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, BranchGuard, RolesGuard)
   @Roles('SUPER_ADMIN', 'ADMIN')
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -87,23 +92,26 @@ export class SettingsController {
     }),
   )
   @ApiOperation({ summary: 'Upload customer display background video (replaces external URL)' })
-  async uploadCustomerDisplayVideo(@UploadedFile() file: UploadedMemoryFile | undefined) {
+  async uploadCustomerDisplayVideo(
+    @UploadedFile() file: UploadedMemoryFile | undefined,
+    @CurrentBranch() branchId: number,
+  ) {
     if (!file) throw new BadRequestException('No file uploaded');
     const uploaded = await this.localUploadService.saveBuffer(file.buffer, {
       mimetype: file.mimetype,
       originalname: file.originalname,
       subfolder: 'customer-display',
     });
-    await this.settingsService.setCustomerDisplayVideoLocalPath(uploaded.path);
+    await this.settingsService.setCustomerDisplayVideoLocalPath(branchId, uploaded.path);
     return { path: uploaded.path, filename: uploaded.filename };
   }
 
   @Put('loyalty')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, BranchGuard, RolesGuard)
   @Roles('SUPER_ADMIN', 'ADMIN')
   @ApiOperation({ summary: 'Update loyalty settings' })
-  updateLoyalty(@Body() dto: UpdateLoyaltySettingsDto) {
-    return this.settingsService.updateLoyalty(dto);
+  updateLoyalty(@Body() dto: UpdateLoyaltySettingsDto, @CurrentBranch() branchId: number) {
+    return this.settingsService.updateLoyalty(branchId, dto);
   }
 }

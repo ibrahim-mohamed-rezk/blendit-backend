@@ -23,8 +23,11 @@ import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
 import { FindAllProductsQueryDto } from './dto/find-all-products-query.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { BranchGuard } from '../common/guards/branch.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
+import { CurrentBranch, BranchScopeParam } from '../common/decorators/current-branch.decorator';
+import type { BranchScope } from '../common/branch-scope';
 import { LocalUploadService } from '../common/services/local-upload.service';
 
 type UploadedMemoryFile = {
@@ -35,7 +38,7 @@ type UploadedMemoryFile = {
 
 @ApiTags('Products')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, BranchGuard)
 @Controller('')
 export class ProductsController {
   constructor(
@@ -48,36 +51,63 @@ export class ProductsController {
   @UseGuards(RolesGuard)
   @Roles('SUPER_ADMIN', 'ADMIN')
   @ApiOperation({ summary: 'Create category' })
-  createCategory(@Body() dto: CreateCategoryDto) {
-    return this.productsService.createCategory(dto);
+  createCategory(@Body() dto: CreateCategoryDto, @CurrentBranch() branchId: number) {
+    return this.productsService.createCategory(dto, branchId);
   }
 
   @Get('categories')
   @ApiOperation({ summary: 'Get all categories' })
-  getCategories() {
-    return this.productsService.findAllCategories();
+  getCategories(@BranchScopeParam() scope: BranchScope) {
+    return this.productsService.findAllCategories(scope);
   }
 
   @Get('categories/:id')
   @ApiOperation({ summary: 'Get category by ID' })
-  getCategory(@Param('id', ParseIntPipe) id: number) {
-    return this.productsService.findOneCategory(id);
+  getCategory(@Param('id', ParseIntPipe) id: number, @CurrentBranch() branchId: number) {
+    return this.productsService.findOneCategory(id, branchId);
   }
 
   @Put('categories/:id')
   @UseGuards(RolesGuard)
   @Roles('SUPER_ADMIN', 'ADMIN')
   @ApiOperation({ summary: 'Update category' })
-  updateCategory(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateCategoryDto) {
-    return this.productsService.updateCategory(id, dto);
+  updateCategory(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateCategoryDto,
+    @CurrentBranch() branchId: number,
+  ) {
+    return this.productsService.updateCategory(id, dto, branchId);
   }
 
   @Delete('categories/:id')
   @UseGuards(RolesGuard)
   @Roles('SUPER_ADMIN', 'ADMIN')
   @ApiOperation({ summary: 'Delete category' })
-  removeCategory(@Param('id', ParseIntPipe) id: number) {
-    return this.productsService.removeCategory(id);
+  removeCategory(@Param('id', ParseIntPipe) id: number, @CurrentBranch() branchId: number) {
+    return this.productsService.removeCategory(id, branchId);
+  }
+
+  @Post('admin/categories/:id/transfer')
+  @UseGuards(RolesGuard)
+  @Roles('SUPER_ADMIN')
+  @ApiOperation({ summary: 'Copy category to another branch (super admin)' })
+  transferCategory(
+    @Param('id', ParseIntPipe) id: number,
+    @Body('to_branch_id', ParseIntPipe) toBranchId: number,
+    @CurrentBranch() branchId: number,
+  ) {
+    return this.productsService.transferCategory(id, branchId, toBranchId);
+  }
+
+  @Post('admin/categories/copy-all')
+  @UseGuards(RolesGuard)
+  @Roles('SUPER_ADMIN')
+  @ApiOperation({ summary: 'Copy all categories from the active branch to another branch (super admin)' })
+  copyAllCategories(
+    @Body('to_branch_id', ParseIntPipe) toBranchId: number,
+    @CurrentBranch() branchId: number,
+  ) {
+    return this.productsService.copyAllCategories(branchId, toBranchId);
   }
 
   // --- Products ---
@@ -85,8 +115,8 @@ export class ProductsController {
   @UseGuards(RolesGuard)
   @Roles('SUPER_ADMIN', 'ADMIN')
   @ApiOperation({ summary: 'Create product' })
-  create(@Body() dto: CreateProductDto) {
-    return this.productsService.create(dto);
+  create(@Body() dto: CreateProductDto, @CurrentBranch() branchId: number) {
+    return this.productsService.create(dto, branchId);
   }
 
   @Post('products/upload-image')
@@ -126,8 +156,9 @@ export class ProductsController {
 
   @Get('products')
   @ApiOperation({ summary: 'Get all products (paginated)' })
-  findAll(@Query() query: FindAllProductsQueryDto) {
+  findAll(@Query() query: FindAllProductsQueryDto, @BranchScopeParam() scope: BranchScope) {
     return this.productsService.findAll(
+      scope,
       query.page ?? 1,
       query.limit ?? 10,
       query.categoryId,
@@ -139,23 +170,50 @@ export class ProductsController {
 
   @Get('products/:id')
   @ApiOperation({ summary: 'Get product by ID' })
-  findOne(@Param('id', ParseIntPipe) id: number) {
-    return this.productsService.findOne(id);
+  findOne(@Param('id', ParseIntPipe) id: number, @CurrentBranch() branchId: number) {
+    return this.productsService.findOne(id, branchId);
   }
 
   @Put('products/:id')
   @UseGuards(RolesGuard)
   @Roles('SUPER_ADMIN', 'ADMIN')
   @ApiOperation({ summary: 'Update product' })
-  update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateProductDto) {
-    return this.productsService.update(id, dto);
+  update(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateProductDto,
+    @CurrentBranch() branchId: number,
+  ) {
+    return this.productsService.update(id, dto, branchId);
   }
 
   @Delete('products/:id')
   @UseGuards(RolesGuard)
   @Roles('SUPER_ADMIN', 'ADMIN')
   @ApiOperation({ summary: 'Delete product' })
-  remove(@Param('id', ParseIntPipe) id: number) {
-    return this.productsService.remove(id);
+  remove(@Param('id', ParseIntPipe) id: number, @CurrentBranch() branchId: number) {
+    return this.productsService.remove(id, branchId);
+  }
+
+  @Post('admin/products/:id/transfer')
+  @UseGuards(RolesGuard)
+  @Roles('SUPER_ADMIN')
+  @ApiOperation({ summary: 'Copy product to another branch (super admin)' })
+  transferProduct(
+    @Param('id', ParseIntPipe) id: number,
+    @Body('to_branch_id', ParseIntPipe) toBranchId: number,
+    @CurrentBranch() branchId: number,
+  ) {
+    return this.productsService.transferProduct(id, branchId, toBranchId);
+  }
+
+  @Post('admin/products/copy-all')
+  @UseGuards(RolesGuard)
+  @Roles('SUPER_ADMIN')
+  @ApiOperation({ summary: 'Copy all products (with categories) from the active branch to another branch (super admin)' })
+  copyAllProducts(
+    @Body('to_branch_id', ParseIntPipe) toBranchId: number,
+    @CurrentBranch() branchId: number,
+  ) {
+    return this.productsService.copyAllProducts(branchId, toBranchId);
   }
 }

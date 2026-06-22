@@ -2,7 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
 export interface CreateLogDto { 
-  user_id: number;  
+  user_id: number;
+  branch_id?: number;
   action: string;
   entity?: string; 
   entity_id?: number; 
@@ -35,9 +36,10 @@ export class ActivityLogsService {
     }
   }
 
-  async findAll(page = 1, limit = 20, userId?: number, action?: string) {
+  async findAll(page = 1, limit = 20, userId?: number, action?: string, branchId?: number) {
     const skip = (page - 1) * limit;
     const where: any = {};
+    if (branchId != null) where.branch_id = branchId;
     if (userId) where.user_id = userId;
     if (action) where.action = { contains: action, mode: 'insensitive' };
     const [data, total] = await this.prisma.$transaction([

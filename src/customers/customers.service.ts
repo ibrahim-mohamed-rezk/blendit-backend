@@ -1,10 +1,27 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateCustomerDto } from './dto/create-customer.dto';
+
+/** Who is viewing customer data — used to scope cashiers to their own branch. */
+export type CustomerViewer = { roleName?: string; branchId?: number };
 
 @Injectable()
 export class CustomersService {
   constructor(private prisma: PrismaService) {}
+
+  /**
+   * Visibility filter. ADMIN / SUPER_ADMIN see every customer. A CASHIER only sees
+   * customers who have at least one order at the cashier's active branch (customers
+   * are global / phone-unique, so "own branch" is derived from their orders).
+   */
+  private viewerWhere(viewer?: CustomerViewer): Prisma.CustomerWhereInput {
+    if (viewer?.roleName === 'CASHIER') {
+      if (viewer.branchId == null) return { id: -1 }; // no branch resolved → see nothing
+      return { orders: { some: { branch_id: viewer.branchId } } };
+    }
+    return {};
+  }
 
   private normalizePhone(phone: string): string {
     return phone.trim();
@@ -42,23 +59,34 @@ export class CustomersService {
     });
   }
 
-  async findAll(page = 1, limit = 10) {
+  async findAll(page = 1, limit = 10, viewer?: CustomerViewer) {
+    const where = this.viewerWhere(viewer);
     const skip = (page - 1) * limit;
     const [data, total] = await this.prisma.$transaction([
       this.prisma.customer.findMany({
+        where,
         skip,
         take: limit,
         orderBy: { created_at: 'desc' },
         include: { loyaltyAccount: true },
       }),
-      this.prisma.customer.count(),
+      this.prisma.customer.count({ where }),
     ]);
     return { data, total, page, limit };
   }
 
-  async findOne(id: number) {
+  async findOne(id: number, viewer?: CustomerViewer) {
     const customer = await this.prisma.customer.findUnique({ where: { id } });
     if (!customer) throw new NotFoundException(`Customer #${id} not found`);
+    if (viewer?.roleName === 'CASHIER') {
+      const inBranch =
+        viewer.branchId != null &&
+        (await this.prisma.order.findFirst({
+          where: { customer_id: id, branch_id: viewer.branchId },
+          select: { id: true },
+        }));
+      if (!inBranch) throw new NotFoundException(`Customer #${id} not found`);
+    }
     return customer;
   }
 

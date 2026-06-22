@@ -7,22 +7,24 @@ import { UpdateAddonDto } from './dto/update-addon.dto';
 export class AddonsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async findAllForAdmin() {
+  async findAllForAdmin(branchId: number) {
     return this.prisma.addon.findMany({
+      where: { branch_id: branchId },
       orderBy: [{ sort_order: 'asc' }, { id: 'asc' }],
     });
   }
 
-  async findAllActive() {
+  async findAllActive(branchId: number) {
     return this.prisma.addon.findMany({
-      where: { is_active: true },
+      where: { branch_id: branchId, is_active: true },
       orderBy: [{ sort_order: 'asc' }, { id: 'asc' }],
     });
   }
 
-  async create(dto: CreateAddonDto) {
+  async create(dto: CreateAddonDto, branchId: number) {
     return this.prisma.addon.create({
       data: {
+        branch_id: branchId,
         name: dto.name.trim(),
         price: dto.price,
         is_active: dto.is_active ?? true,
@@ -31,8 +33,8 @@ export class AddonsService {
     });
   }
 
-  async update(id: number, dto: UpdateAddonDto) {
-    await this.ensureExists(id);
+  async update(id: number, dto: UpdateAddonDto, branchId: number) {
+    await this.ensureExists(id, branchId);
     return this.prisma.addon.update({
       where: { id },
       data: {
@@ -44,8 +46,8 @@ export class AddonsService {
     });
   }
 
-  async remove(id: number) {
-    await this.ensureExists(id);
+  async remove(id: number, branchId: number) {
+    await this.ensureExists(id, branchId);
     const used = await this.prisma.orderAddon.count({ where: { addon_id: id } });
     if (used > 0) {
       return this.prisma.addon.update({
@@ -57,8 +59,8 @@ export class AddonsService {
     return { id, deleted: true };
   }
 
-  private async ensureExists(id: number): Promise<void> {
-    const row = await this.prisma.addon.findUnique({ where: { id } });
+  private async ensureExists(id: number, branchId: number): Promise<void> {
+    const row = await this.prisma.addon.findFirst({ where: { id, branch_id: branchId } });
     if (!row) throw new NotFoundException(`Add-on #${id} not found`);
   }
 }

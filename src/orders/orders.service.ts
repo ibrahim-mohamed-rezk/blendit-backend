@@ -1,7 +1,9 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BranchScope, orderBranchWhere } from '../common/branch-scope';
 import { PrismaService } from '../prisma/prisma.service';
 import { SettingsService } from '../settings/settings.service';
 import { ActivityLogsService } from '../activity-logs/activity-logs.service';
+import { InventoryService } from '../inventory/inventory.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
@@ -18,8 +20,8 @@ import {
   TransactionStatus,
 } from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { computeOrderTotals, resolveTaxRatePct } from './order-pricing';
 
-const DEFAULT_TAX_RATE = 0.15; // 15% – used when store taxRate is missing
 const LOYALTY_POINT_UNITS = 2; // 1 point = 2 stored units (supports 0.5 points with Int schema)
 
 @Injectable()
@@ -29,6 +31,7 @@ export class OrdersService {
     private eventEmitter: EventEmitter2,
     private settingsService: SettingsService,
     private activityLogs: ActivityLogsService,
+    private inventoryService: InventoryService,
   ) {}
 
   /** When a sale is canceled/refunded, keep POS delivery queue in sync with the same order. */
@@ -42,14 +45,33 @@ export class OrdersService {
     });
   }
 
+  /** Flip completed payments to refunded rows with negative amounts (Transactions page ledger). */
+  private async reverseCompletedPaymentTransactions(
+    orderId: number,
+    db: Prisma.TransactionClient | PrismaService = this.prisma,
+  ): Promise<void> {
+    const completed = await db.transaction.findMany({
+      where: { order_id: orderId, status: TransactionStatus.COMPLETED },
+    });
+    for (const t of completed) {
+      await db.transaction.update({
+        where: { id: t.id },
+        data: {
+          status: TransactionStatus.REFUNDED,
+          amount: -Math.abs(t.amount),
+        },
+      });
+    }
+  }
+
   /** POS: cashier must be the authenticated JWT user — never guess another staff id (fixes wrong shift totals). */
   private async resolvePosCashierId(cashierId?: number): Promise<number> {
     if (typeof cashierId !== 'number' || !Number.isFinite(cashierId)) {
       throw new BadRequestException('Authenticated cashier is required for POS orders');
     }
     const u = await this.prisma.user.findUnique({
-      where: { id: cashierId },
-      include: { role: true },
+      where: { id: cashierId }, 
+      include: { role: true },  
     });
     if (!u?.is_active) {
       throw new BadRequestException('Invalid or inactive user for POS order');
@@ -58,21 +80,25 @@ export class OrdersService {
     if (roleName !== 'CASHIER' && roleName !== 'ADMIN' && roleName !== 'SUPER_ADMIN') {
       throw new ForbiddenException('Only staff roles can create POS orders');
     }
-    return u.id;
+    return u.id; 
   }
 
   /**
    * Website orders have no logged-in cashier; attribute to a real CASHIER first (not lowest-id SUPER_ADMIN),
    * so POS shift reports for admins are not polluted by web checkouts.
    */
-  private async resolvePublicWebsiteCashierId(): Promise<number> {
+  private async resolvePublicWebsiteCashierId(branchId: number): Promise<number> {
     const cashier = await this.prisma.user.findFirst({
-      where: { is_active: true, role: { name: 'CASHIER' } },
+      where: { is_active: true, branch_id: branchId, role: { name: 'CASHIER' } },
       orderBy: { id: 'asc' },
     });
     if (cashier) return cashier.id;
     const admin = await this.prisma.user.findFirst({
-      where: { is_active: true, role: { name: 'ADMIN' } },
+      where: {
+        is_active: true,
+        role: { name: 'ADMIN' },
+        OR: [{ userBranches: { some: { branch_id: branchId } } }, { branch_id: branchId }],
+      },
       orderBy: { id: 'asc' },
     });
     if (admin) return admin.id;
@@ -92,8 +118,9 @@ export class OrdersService {
     return o || d || undefined;
   }
 
-  private async generateOrderNumber(): Promise<string> {
-    const count = await this.prisma.order.count();
+  private async generateOrderNumber(branchId: number, tx?: { order: { count: (args: unknown) => Promise<number> } }): Promise<string> {
+    const db = tx ?? this.prisma;
+    const count = await db.order.count({ where: { branch_id: branchId } });
     const date = new Date();
     const dateStr = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
     return `BLD-${dateStr}-${String(count + 1).padStart(4, '0')}`;
@@ -168,6 +195,48 @@ export class OrdersService {
       }
     }
     return this.roundMoney(sum);
+  }
+
+  /** Base unit price from product catalog price or selected size, plus customization extras. */
+  private async resolveProductUnitPrice(
+    product: { id: number; name: string; price: number; customization_options: unknown },
+    productSizeId: number | undefined | null,
+    customizations: unknown,
+  ): Promise<{ unitPrice: number; productSizeId: number | null }> {
+    const extras = this.customizationExtrasFromProductJson(product.customization_options, customizations);
+    const activeSizes = await this.prisma.productSize.findMany({
+      where: { product_id: product.id, is_active: true },
+      orderBy: [{ sort_order: 'asc' }, { id: 'asc' }],
+    });
+
+    if (activeSizes.length > 0) {
+      let resolvedSizeId = productSizeId;
+      if (resolvedSizeId == null || !Number.isFinite(resolvedSizeId)) {
+        const defaultSize = [...activeSizes].sort((a, b) => {
+          if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
+          if (a.price !== b.price) return a.price - b.price;
+          return a.id - b.id;
+        })[0];
+        resolvedSizeId = defaultSize.id;
+      }
+      const size = activeSizes.find((s) => s.id === resolvedSizeId);
+      if (!size) {
+        throw new BadRequestException(`Invalid size for product "${product.name}"`);
+      }
+      return {
+        unitPrice: this.roundMoney(size.price + extras),
+        productSizeId: size.id,
+      };
+    }
+
+    if (productSizeId != null && Number.isFinite(productSizeId)) {
+      throw new BadRequestException(`Product "${product.name}" has no sizes`);
+    }
+
+    return {
+      unitPrice: this.roundMoney(product.price + extras),
+      productSizeId: null,
+    };
   }
 
   /** Convert display points (e.g. 5, 10, 0.5) to stored integer units. */
@@ -263,6 +332,90 @@ export class OrdersService {
     return this.roundMoney(discount);
   }
 
+  private isBogoOfferCurrentlyValid(offer: {
+    valid_from: Date | null;
+    valid_until: Date | null;
+  }): boolean {
+    const now = new Date();
+    if (offer.valid_from && now < offer.valid_from) return false;
+    if (offer.valid_until && now > offer.valid_until) return false;
+    return true;
+  }
+
+  /** Paid units that count toward BOGO buy quantity (excludes free loyalty / BOGO lines). */
+  private countPaidUnitsForBogoBuy(
+    itemsData: Array<{ product_id: number; quantity: number }>,
+    offer: { buy_product_id: number | null; get_product_id: number },
+    redemptionCount: number,
+    loyaltyFreeProductIds: number[],
+  ): number {
+    if (offer.buy_product_id != null) {
+      let paidBuyQty = itemsData
+        .filter((i) => i.product_id === offer.buy_product_id)
+        .reduce((s, i) => s + i.quantity, 0);
+      if (offer.buy_product_id === offer.get_product_id) {
+        paidBuyQty = Math.max(0, paidBuyQty - redemptionCount);
+      }
+      return paidBuyQty;
+    }
+
+    let total = itemsData.reduce((s, i) => s + i.quantity, 0);
+    total = Math.max(0, total - redemptionCount);
+    total = Math.max(0, total - loyaltyFreeProductIds.length);
+    return total;
+  }
+
+  /** Validate BOGO redemptions and return free product ids (one per redemption line). */
+  private async validateBogoRedemptions(
+    branchId: number,
+    itemsData: Array<{ product_id: number; quantity: number; price: number }>,
+    redemptions: Array<{ bogo_offer_id: number; free_product_id: number }>,
+    loyaltyFreeProductIds: number[],
+  ): Promise<number[]> {
+    const byOffer = new Map<number, number>();
+    for (const r of redemptions) {
+      byOffer.set(r.bogo_offer_id, (byOffer.get(r.bogo_offer_id) ?? 0) + 1);
+    }
+
+    const freePids: number[] = [];
+
+    for (const [offerId, redemptionCount] of byOffer) {
+      const offer = await this.prisma.bogoOffer.findFirst({
+        where: { id: offerId, branch_id: branchId },
+      });
+      if (!offer?.is_active) {
+        throw new BadRequestException('Offer is not available');
+      }
+      if (!this.isBogoOfferCurrentlyValid(offer)) {
+        throw new BadRequestException(`Offer "${offer.name}" is not valid at this time`);
+      }
+
+      const paidBuyQty = this.countPaidUnitsForBogoBuy(
+        itemsData,
+        offer,
+        redemptionCount,
+        loyaltyFreeProductIds,
+      );
+      const eligibleSets = Math.floor(paidBuyQty / offer.buy_quantity);
+      const maxFree = eligibleSets * offer.get_quantity;
+
+      if (redemptionCount > maxFree) {
+        throw new BadRequestException(
+          `Offer "${offer.name}": only ${maxFree} free item(s) allowed (buy ${offer.buy_quantity}, get ${offer.get_quantity})`,
+        );
+      }
+
+      for (const r of redemptions.filter((x) => x.bogo_offer_id === offerId)) {
+        if (r.free_product_id !== offer.get_product_id) {
+          throw new BadRequestException('Free product does not match this offer');
+        }
+        freePids.push(r.free_product_id);
+      }
+    }
+
+    return freePids;
+  }
+
   /** Build one or more payment lines; split mode requires ≥2 lines and sum ≈ order total. */
   private resolvePaymentLines(
     dto: CreateOrderDto,
@@ -296,10 +449,14 @@ export class OrdersService {
     return [{ payment_method: dto.payment_method as PaymentMethod, amount: target }];
   }
 
-  async create(dto: CreateOrderDto, cashierId?: number, source: 'POS' | 'PUBLIC' = 'POS') {
+  async create(dto: CreateOrderDto, cashierId?: number, source: 'POS' | 'PUBLIC' = 'POS', branchId?: number) {
+    const resolvedBranchId = branchId ?? dto.branch_id;
+    if (!resolvedBranchId) {
+      throw new BadRequestException('branch_id is required');
+    }
     const resolvedCashierId =
       source === 'PUBLIC'
-        ? await this.resolvePublicWebsiteCashierId()
+        ? await this.resolvePublicWebsiteCashierId(resolvedBranchId)
         : await this.resolvePosCashierId(cashierId);
     const clientOrderId = dto.client_order_id?.trim() || null;
     const orderInclude = {
@@ -309,8 +466,8 @@ export class OrdersService {
       cashier: { include: { role: true } },
     } as const;
     if (source === 'POS' && clientOrderId) {
-      const existingOrder = await this.prisma.order.findUnique({
-        where: { client_order_id: clientOrderId },
+      const existingOrder = await this.prisma.order.findFirst({
+        where: { branch_id: resolvedBranchId, client_order_id: clientOrderId },
         include: orderInclude,
       });
       if (existingOrder) {
@@ -318,12 +475,10 @@ export class OrdersService {
       }
     }
     const [storeSettings, loyaltySettings] = await Promise.all([
-      this.settingsService.getStore(),
-      this.settingsService.getLoyalty(),
+      this.settingsService.getStore(resolvedBranchId),
+      this.settingsService.getLoyalty(resolvedBranchId),
     ]);
-    const taxRateRaw = Number(storeSettings?.taxRate);
-    const taxRatePct = Number.isFinite(taxRateRaw) ? taxRateRaw : 15;
-    const taxRate = taxRatePct / 100;
+    const taxRatePct = resolveTaxRatePct(storeSettings);
     void loyaltySettings;
 
     // 1. Validate and calculate items
@@ -331,16 +486,22 @@ export class OrdersService {
     const itemsData: any[] = [];
 
     for (const item of dto.items) {
-      const product = await this.prisma.product.findUnique({ where: { id: item.product_id } });
+      const product = await this.prisma.product.findFirst({
+        where: { id: item.product_id, branch_id: resolvedBranchId },
+      });
       if (!product) throw new NotFoundException(`Product #${item.product_id} not found`);
       if (!product.is_available) throw new BadRequestException(`Product "${product.name}" is not available`);
 
-      const extras = this.customizationExtrasFromProductJson(product.customization_options, item.customizations);
-      const unitPrice = this.roundMoney(product.price + extras);
+      const { unitPrice, productSizeId: resolvedSizeId } = await this.resolveProductUnitPrice(
+        product,
+        item.product_size_id,
+        item.customizations,
+      );
       const lineTotal = unitPrice * item.quantity;
       subtotal += lineTotal;
       itemsData.push({
         product_id: item.product_id,
+        product_size_id: resolvedSizeId,
         quantity: item.quantity,
         price: unitPrice,
         notes: item.notes,
@@ -360,7 +521,9 @@ export class OrdersService {
 
     const orderAddonsCreate: { addon_id: number; quantity: number; unit_price: number }[] = [];
     for (const [addonId, qty] of mergedAddons) {
-      const addon = await this.prisma.addon.findUnique({ where: { id: addonId } });
+      const addon = await this.prisma.addon.findFirst({
+        where: { id: addonId, branch_id: resolvedBranchId },
+      });
       if (!addon) throw new NotFoundException(`Add-on #${addonId} not found`);
       if (!addon.is_active) throw new BadRequestException(`Add-on "${addon.name}" is not available`);
       subtotal += addon.price * qty;
@@ -540,12 +703,24 @@ export class OrdersService {
       }
     }
 
+    // 2b. Buy-X-get-Y offers (no loyalty points; cashier adds free lines in POS).
+    let bogoFreeDiscount = 0;
+    let bogoFreeProductIdsForEarn: number[] = [];
+
+    if (dto.bogo_redemptions?.length) {
+      bogoFreeProductIdsForEarn = await this.validateBogoRedemptions(
+        resolvedBranchId,
+        itemsData,
+        dto.bogo_redemptions,
+        loyaltyFreeProductIdsForEarn,
+      );
+      bogoFreeDiscount = this.computeSequentialFreeUnitsDiscount(itemsData, bogoFreeProductIdsForEarn);
+    }
+
     // 3. Calculate totals (tax from store settings)
     const customDiscount = dto.discount || 0;
-    const totalDiscount = this.roundMoney(customDiscount + loyaltyFreeDiscount);
-    const discountedSubtotal = Math.max(subtotal - totalDiscount, 0);
-    const tax = discountedSubtotal * taxRate;
-    const total = discountedSubtotal + tax;
+    const totalDiscount = this.roundMoney(customDiscount + loyaltyFreeDiscount + bogoFreeDiscount);
+    const { tax, total } = computeOrderTotals({ subtotal, discount: totalDiscount, taxRatePct });
 
     const isPosDeliveryCheckout = source === 'POS' && dto.order_type === OrderType.DELIVERY;
     const initialOrderStatus =
@@ -559,9 +734,10 @@ export class OrdersService {
     let resolvedFromUniqueConflict = false;
     try {
       order = await this.prisma.$transaction(async (tx) => {
-        const orderNumber = await this.generateOrderNumber();
+        const orderNumber = await this.generateOrderNumber(resolvedBranchId, tx);
         const createdOrder = await tx.order.create({
           data: {
+            branch_id: resolvedBranchId,
             order_number: orderNumber,
             client_order_id: source === 'POS' ? clientOrderId : null,
             order_type: dto.order_type,
@@ -637,7 +813,7 @@ export class OrdersService {
             price: Number(i.price),
             quantity: Number(i.quantity),
           })),
-          loyaltyFreeProductIdsForEarn,
+          [...loyaltyFreeProductIdsForEarn, ...bogoFreeProductIdsForEarn],
         );
         if (pointsEarned > 0) {
         await tx.loyaltyAccount.upsert({
@@ -663,6 +839,7 @@ export class OrdersService {
       if (dto.order_type === 'DELIVERY' && resolvedCustomerId != null && dto.delivery_address) {
         await tx.deliveryOrder.create({
           data: {
+            branch_id: resolvedBranchId,
             order_id: createdOrder.id,
             customer_id: resolvedCustomerId,
             address: dto.delivery_address,
@@ -678,6 +855,7 @@ export class OrdersService {
       ) {
         await tx.deliveryOrder.create({
           data: {
+            branch_id: resolvedBranchId,
             order_id: createdOrder.id,
             customer_id: resolvedCustomerId,
             address: dto.delivery_address?.trim() || 'Website order (walk-in pickup)',
@@ -689,6 +867,8 @@ export class OrdersService {
         });
       }
 
+      // Inventory is no longer deducted when an order is created/completed.
+
         return createdOrder;
       });
     } catch (error) {
@@ -698,8 +878,8 @@ export class OrdersService {
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === 'P2002'
       ) {
-        const existingOrder = await this.prisma.order.findUnique({
-          where: { client_order_id: clientOrderId },
+        const existingOrder = await this.prisma.order.findFirst({
+          where: { branch_id: resolvedBranchId, client_order_id: clientOrderId },
           include: orderInclude,
         });
         if (existingOrder) {
@@ -719,6 +899,7 @@ export class OrdersService {
     // 9. Activity log and real-time events
     await this.activityLogs.create({
       user_id: resolvedCashierId,
+      branch_id: resolvedBranchId,
       action: 'create_order',
       entity: 'Order',
       entity_id: order.id,
@@ -726,18 +907,15 @@ export class OrdersService {
         order_number: order.order_number,
         total: order.total,
         client_order_id: dto.client_order_id,
+        branch_id: resolvedBranchId,
       },
       created_at: order.created_at,
     });
-    this.eventEmitter.emit('order.created', { order, source });
+    this.eventEmitter.emit('order.created', { order, source, branch_id: resolvedBranchId });
 
     return order;
   }
 
-  /**
-   * Website orders skip EARNED at checkout. Award once when delivery is out for delivery or completed,
-   * or when the order is marked completed (idempotent via existing EARNED txn).
-   */
   async tryAwardDeferredLoyaltyPoints(orderId: number): Promise<void> {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
@@ -812,7 +990,28 @@ export class OrdersService {
     });
   }
 
+  /** Deduct recipe stock when an order is completed (idempotent). */
+  async tryDeductStockForOrder(orderId: number): Promise<void> {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: { id: true, branch_id: true, status: true },
+    });
+    if (!order || order.status !== OrderStatus.COMPLETED) return;
+    await this.inventoryService.deductForOrder(orderId, order.branch_id);
+  }
+
+  /** Restore recipe stock after cancel/refund of a completed order (idempotent). */
+  async tryRestoreStockForOrder(orderId: number): Promise<void> {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: { branch_id: true },
+    });
+    if (!order) return;
+    await this.inventoryService.restoreForOrder(orderId, order.branch_id);
+  }
+
   async findAll(
+    scope: BranchScope,
     page = 1,
     limit = 10,
     status?: OrderStatus,
@@ -823,7 +1022,7 @@ export class OrdersService {
     search?: string,
   ) {
     const skip = (page - 1) * limit;
-    const where: Record<string, unknown> = {};
+    const where: Record<string, unknown> = { ...orderBranchWhere(scope) };
     if (status) where.status = status;
     if (type) where.order_type = type;
     const parseYmdStart = (ymd: string): Date | undefined => {
@@ -871,9 +1070,10 @@ export class OrdersService {
           items: { include: { product: true } },
           orderAddons: { include: { addon: true } },
           customer: true,
-          cashier: { select: { id: true, name: true } }, 
+          cashier: { select: { id: true, name: true } },
           transactions: true,
           deliveryOrders: true,
+          ...(scope.allBranches ? { branch: { select: { id: true, name: true, slug: true } } } : {}),
         },
         orderBy: { created_at: 'desc' },
       }),
@@ -882,9 +1082,9 @@ export class OrdersService {
     return { data, total, page, limit };
   }
 
-  async findOne(id: number) {
-    const order = await this.prisma.order.findUnique({
-      where: { id },
+  async findOne(id: number, branchId?: number) {
+    const order = await this.prisma.order.findFirst({
+      where: { id, ...(branchId != null ? { branch_id: branchId } : {}) },
       include: {
         items: { include: { product: true } },
         orderAddons: { include: { addon: true } },
@@ -899,8 +1099,8 @@ export class OrdersService {
   }
 
   /** Append text to order-level notes (e.g. Instapay payer + ref after checkout). */
-  async appendOrderNote(id: number, dto: AppendOrderNoteDto) {
-    const order = await this.findOne(id);
+  async appendOrderNote(id: number, dto: AppendOrderNoteDto, branchId: number) {
+    const order = await this.findOne(id, branchId);
     const piece = dto.append_note.trim();
     if (!piece) throw new BadRequestException('Note cannot be empty');
     const prev = order.notes?.trim();
@@ -921,17 +1121,23 @@ export class OrdersService {
     return updated;
   }
 
-  async updateStatus(id: number, dto: UpdateOrderStatusDto, user?: { role?: { name: string } }) {
-    const order = await this.findOne(id);
+  async updateStatus(id: number, dto: UpdateOrderStatusDto, user?: { role?: { name: string } }, branchId?: number) {
+    const order = await this.findOne(id, branchId);
+    const previousStatus = order.status;
     if (order.status === OrderStatus.CANCELLED) {
       throw new BadRequestException('Cancelled/refunded orders cannot be changed again');
     }
     if (user?.role?.name === 'CASHIER' && order.status !== OrderStatus.PENDING) {
-      throw new ForbiddenException('Cashier can only update status of pending orders');
+      if (dto.status !== OrderStatus.CANCELLED) {
+        throw new ForbiddenException('Cashier can only update status of pending orders');
+      }
     }
     if (dto.status === OrderStatus.CANCELLED) {
-      const ok = await this.settingsService.verifyManagerPin(dto.manager_pin);
-      if (!ok) throw new ForbiddenException('Invalid manager PIN');
+      await this.settingsService.assertManagerAuthorization(
+        order.branch_id,
+        user?.role?.name,
+        dto.manager_pin,
+      );
     }
     const updated = await this.prisma.order.update({
       where: { id },
@@ -949,38 +1155,45 @@ export class OrdersService {
     });
     if (dto.status === OrderStatus.CANCELLED) {
       await this.cancelLinkedDeliveryOrders(id);
+      await this.reverseCompletedPaymentTransactions(id);
+      // Inventory is no longer restored when an order is cancelled.
     }
-    if (dto.status === OrderStatus.COMPLETED) {
+    if (dto.status === OrderStatus.COMPLETED && previousStatus !== OrderStatus.COMPLETED) {
       await this.tryAwardDeferredLoyaltyPoints(id);
+      // Inventory is no longer deducted when an order is completed.
     }
     this.eventEmitter.emit('order.statusUpdated', updated);
     return updated;
   }
 
-  async update(id: number, dto: UpdateOrderDto, user: { role?: { name: string } }) {
-    const order = await this.findOne(id);
+  async update(id: number, dto: UpdateOrderDto, user: { role?: { name: string } }, branchId?: number) {
+    const order = await this.findOne(id, branchId);
     if (user?.role?.name === 'CASHIER' && order.status !== OrderStatus.PENDING) {
       throw new ForbiddenException('Cashier can only update pending orders');
     }
     if (!dto.items?.length) throw new BadRequestException('Order must have at least one item');
 
-    const storeSettings = await this.settingsService.getStore();
-    const taxRateRaw = Number(storeSettings?.taxRate);
-    const taxRatePct = Number.isFinite(taxRateRaw) ? taxRateRaw : DEFAULT_TAX_RATE * 100;
-    const taxRate = taxRatePct / 100;
+    const storeSettings = await this.settingsService.getStore(order.branch_id);
+    const taxRatePct = resolveTaxRatePct(storeSettings);
 
     let subtotal = 0;
     const itemsData: any[] = [];
     for (const item of dto.items) {
-      const product = await this.prisma.product.findUnique({ where: { id: item.product_id } });
+      const product = await this.prisma.product.findFirst({
+        where: { id: item.product_id, branch_id: order.branch_id },
+      });
       if (!product) throw new NotFoundException(`Product #${item.product_id} not found`);
       if (!product.is_available) throw new BadRequestException(`Product "${product.name}" is not available`);
-      const extras = this.customizationExtrasFromProductJson(product.customization_options, item.customizations);
-      const unitPrice = this.roundMoney(product.price + extras);
+      const { unitPrice, productSizeId: resolvedSizeId } = await this.resolveProductUnitPrice(
+        product,
+        item.product_size_id,
+        item.customizations,
+      );
       const lineTotal = unitPrice * item.quantity;
       subtotal += lineTotal;
       itemsData.push({
         product_id: item.product_id,
+        product_size_id: resolvedSizeId,
         quantity: item.quantity,
         price: unitPrice,
         notes: item.notes,
@@ -1002,7 +1215,7 @@ export class OrdersService {
         mergedAddons.set(aid, (mergedAddons.get(aid) ?? 0) + q);
       }
       for (const [addonId, qty] of mergedAddons) {
-        const addon = await this.prisma.addon.findUnique({ where: { id: addonId } });
+        const addon = await this.prisma.addon.findFirst({ where: { id: addonId, branch_id: order.branch_id } });
         if (!addon) throw new NotFoundException(`Add-on #${addonId} not found`);
         if (!addon.is_active) throw new BadRequestException(`Add-on "${addon.name}" is not available`);
         addonSubtotal += addon.price * qty;
@@ -1018,9 +1231,7 @@ export class OrdersService {
     subtotal += addonSubtotal;
 
     const discount = dto.discount ?? order.discount;
-    const discountedSubtotal = Math.max(subtotal - discount, 0);
-    const tax = discountedSubtotal * taxRate; 
-    const total = discountedSubtotal + tax;
+    const { tax, total } = computeOrderTotals({ subtotal, discount, taxRatePct });
 
     const paymentMethod = dto.payment_method?.trim().toUpperCase() as PaymentMethod | undefined;
     if (paymentMethod && !['CASH', 'CARD', 'WALLET'].includes(paymentMethod)) {
@@ -1148,61 +1359,62 @@ export class OrdersService {
     }
   }
 
-  async refund(id: number, dto: RefundOrderDto, user: { id: number; role?: { name: string } }) {
-    const order = await this.prisma.order.findUnique({
+  async refund(id: number, dto: RefundOrderDto, user: { id: number; role?: { name: string } }, branchId?: number) {
+    const order = await this.findOne(id, branchId);
+    const orderWithTx = await this.prisma.order.findUnique({
       where: { id },
-      include: {
-        items: { include: { product: true } },
-        customer: true,
-        transactions: true,
-      },
+      include: { transactions: true },
     });
-    if (!order) throw new NotFoundException(`Order #${id} not found`);
+    if (!orderWithTx) throw new NotFoundException(`Order #${id} not found`);
 
-    const hasCompletedTxn = order.transactions?.some((t) => t.status === TransactionStatus.COMPLETED);
+    const hasCompletedTxn = orderWithTx.transactions?.some((t) => t.status === TransactionStatus.COMPLETED);
     if (!hasCompletedTxn) {
       throw new BadRequestException('Order has no completed payment to refund');
     }
-    if (order.status === OrderStatus.CANCELLED || order.transactions?.some((t) => t.status === TransactionStatus.REFUNDED)) {
+    if (order.status === OrderStatus.CANCELLED || orderWithTx.transactions?.some((t) => t.status === TransactionStatus.REFUNDED)) {
       throw new BadRequestException('Cancelled/refunded orders cannot be changed again');
     }
-    const ok = await this.settingsService.verifyManagerPin(dto.manager_pin);
-    if (!ok) {
-      throw new ForbiddenException('Invalid manager PIN');
-    }
+    await this.settingsService.assertManagerAuthorization(
+      order.branch_id,
+      user?.role?.name,
+      dto.manager_pin,
+    );
 
     const refundNoteLine = dto.reason?.trim()
       ? `Refund reason: ${dto.reason.trim()}`
       : undefined;
 
-    // Mark completed payments as refunded; order is canceled (same as manual cancel for reporting)
-    const updated = await this.prisma.order.update({
-      where: { id },
-      data: {
-        status: OrderStatus.CANCELLED,
-        ...(refundNoteLine
-          ? {
-              notes: order.notes?.trim()
-                ? `${order.notes.trim()}\n\n${refundNoteLine}`
-                : refundNoteLine,
-            }
-          : {}),
-        transactions: {
-          updateMany: {
-            where: { status: TransactionStatus.COMPLETED },
-            data: { status: TransactionStatus.REFUNDED },
-          },
+    // Mark completed payments as refunded (negative amounts for Transactions ledger)
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const updatedOrder = await tx.order.update({
+        where: { id },
+        data: {
+          status: OrderStatus.CANCELLED,
+          ...(refundNoteLine
+            ? {
+                notes: order.notes?.trim()
+                  ? `${order.notes.trim()}\n\n${refundNoteLine}`
+                  : refundNoteLine,
+              }
+            : {}),
         },
-      },
-      include: {
-        items: { include: { product: true } },
-        customer: true,
-        transactions: true,
-        deliveryOrders: true,
-      },
+      });
+      await this.reverseCompletedPaymentTransactions(id, tx);
+      return tx.order.findUnique({
+        where: { id: updatedOrder.id },
+        include: {
+          items: { include: { product: true } },
+          customer: true,
+          transactions: true,
+          deliveryOrders: true,
+        },
+      });
     });
+    if (!updated) throw new NotFoundException(`Order #${id} not found`);
 
     await this.cancelLinkedDeliveryOrders(id);
+
+    // Inventory is no longer restored when an order is refunded.
 
     await this.activityLogs.create({
       user_id: user.id,

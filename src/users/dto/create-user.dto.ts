@@ -9,7 +9,10 @@ import {
   IsArray,
   Matches,
   ValidateIf,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
+import { AdminBranchAssignmentDto } from './admin-branch-assignment.dto';
 
 export class CreateUserDto {
   @ApiProperty()
@@ -45,7 +48,30 @@ export class CreateUserDto {
   @IsInt()
   role_id: number;
 
-  @ApiPropertyOptional({ description: 'Allowed admin page paths for ADMIN role, e.g. ["/admin/orders", "/admin/products"]' })
+  @ApiPropertyOptional({ description: 'Home branch for CASHIER role' })
+  @IsOptional()
+  @IsInt()
+  branch_id?: number;
+
+  @ApiPropertyOptional({ type: [Number], description: 'Deprecated — use branch_assignments' })
+  @IsOptional()
+  @IsArray()
+  @IsInt({ each: true })
+  branch_ids?: number[];
+
+  @ApiPropertyOptional({
+    type: [AdminBranchAssignmentDto],
+    description: 'Branches and page permissions for ADMIN role',
+  })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => AdminBranchAssignmentDto)
+  branch_assignments?: AdminBranchAssignmentDto[];
+
+  @ApiPropertyOptional({
+    description: 'Deprecated — use branch_assignments[].page_access per branch',
+  })
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
