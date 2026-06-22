@@ -54,6 +54,17 @@ jobs:
       - name: ⚙️ Prisma Generate
         run: npx prisma generate
 
+      # One-time recovery: a previous deploy left
+      # 20260615160000_product_recipe_per_size in a failed state (it referenced
+      # the product_sizes table before it existed). The migration files are now
+      # fixed, but Prisma still refuses to apply anything while a failed record
+      # remains (P3009). Marking it rolled back lets the corrected version
+      # re-apply. This is safe to leave in: once the migration is applied
+      # successfully, resolve simply errors (it only acts on failed migrations)
+      # and the error is ignored.
+      - name: 🩹 Clear failed migration record (if any)
+        run: npx prisma migrate resolve --rolled-back 20260615160000_product_recipe_per_size || echo "Nothing to resolve"
+
       - name: 🗄️ Run Migrations
         run: npx prisma migrate deploy
 
