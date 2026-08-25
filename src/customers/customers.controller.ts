@@ -7,7 +7,7 @@ import { BranchGuard } from '../common/guards/branch.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { BranchScopeParam } from '../common/decorators/current-branch.decorator';
 import type { BranchScope } from '../common/branch-scope';
-import { PaginationDto } from '../common/dto/pagination.dto';
+import { QueryCustomersDto } from './dto/query-customers.dto';
 
 /** Resolve the customer-visibility scope: cashiers only see their own branch's customers. */
 function customerViewer(
@@ -34,13 +34,21 @@ export class CustomersController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'Get all customers (paginated). Cashiers see only their branch.' })
+  @ApiOperation({
+    summary:
+      'Get customers (paginated, optional search). Totals cover the whole filtered set, not the page. Cashiers see only their branch.',
+  })
   findAll(
-    @Query() pagination: PaginationDto,
+    @Query() query: QueryCustomersDto,
     @CurrentUser() user: { role?: { name: string } },
     @BranchScopeParam() scope: BranchScope,
   ) {
-    return this.customersService.findAll(pagination.page, pagination.limit, customerViewer(user, scope));
+    return this.customersService.findAll(
+      query.page,
+      query.limit,
+      customerViewer(user, scope),
+      query.search,
+    );
   }
 
   @Get('search')

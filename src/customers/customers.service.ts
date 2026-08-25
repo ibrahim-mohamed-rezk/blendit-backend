@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { OrderStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 
@@ -21,6 +21,30 @@ export class CustomersService {
       return { orders: { some: { branch_id: viewer.branchId } } };
     }
     return {};
+  }
+
+  /**
+   * Narrows `base` to rows matching a free-text term on name / phone / email.
+   * Returned as-is when the term is blank so the plain filter stays index-friendly.
+   */
+  private searchWhere(
+    base: Prisma.CustomerWhereInput,
+    search?: string,
+  ): Prisma.CustomerWhereInput {
+    const term = search?.trim();
+    if (!term) return base;
+    return {
+      AND: [
+        base,
+        {
+          OR: [
+            { name: { contains: term, mode: 'insensitive' } },
+            { phone: { contains: term } },
+            { email: { contains: term, mode: 'insensitive' } },
+          ],
+        },
+      ],
+    };
   }
 
   private normalizePhone(phone: string): string {
@@ -59,10 +83,49 @@ export class CustomersService {
     });
   }
 
-  async findAll(page = 1, limit = 10, viewer?: CustomerViewer) {
-    const where = this.viewerWhere(viewer);
+  /** Spend / visits / last visit per customer, for one page of ids. */
+  private async orderStatsFor(customerIds: number[], viewer?: CustomerViewer) {
+    const stats = new Map<
+      number,
+      { total_spent: number; visit_count: number; last_visit: Date | null }
+    >();
+    if (customerIds.length === 0) return stats;
+    // Refunds flip the order to CANCELLED, so COMPLETED alone excludes them.
+    const rows = await this.prisma.order.groupBy({
+      by: ['customer_id'],
+      where: {
+        customer_id: { in: customerIds },
+        status: OrderStatus.COMPLETED,
+        ...(viewer?.branchId != null ? { branch_id: viewer.branchId } : {}),
+      },
+      _sum: { total: true },
+      _count: { _all: true },
+      _max: { created_at: true },
+    });
+    for (const row of rows) {
+      if (row.customer_id == null) continue;
+      stats.set(row.customer_id, {
+        total_spent: row._sum.total ?? 0,
+        visit_count: row._count._all,
+        last_visit: row._max.created_at,
+      });
+    }
+    return stats;
+  }
+
+  /**
+   * One page of customers plus totals for the whole filtered set (not just the page),
+   * so list headers can show real counts without loading every row.
+   */
+  async findAll(
+    page = 1,
+    limit = 10,
+    viewer?: CustomerViewer,
+    search?: string,
+  ) {
+    const where = this.searchWhere(this.viewerWhere(viewer), search);
     const skip = (page - 1) * limit;
-    const [data, total] = await this.prisma.$transaction([
+    const [data, total, points] = await this.prisma.$transaction([
       this.prisma.customer.findMany({
         where,
         skip,
@@ -71,8 +134,27 @@ export class CustomersService {
         include: { loyaltyAccount: true },
       }),
       this.prisma.customer.count({ where }),
+      this.prisma.loyaltyAccount.aggregate({
+        _sum: { points_balance: true },
+        where: { customer: where },
+      }),
     ]);
-    return { data, total, page, limit };
+    const stats = await this.orderStatsFor(
+      data.map((c) => c.id),
+      viewer,
+    );
+    return {
+      data: data.map((c) => ({
+        ...c,
+        total_spent: stats.get(c.id)?.total_spent ?? 0,
+        visit_count: stats.get(c.id)?.visit_count ?? 0,
+        last_visit: stats.get(c.id)?.last_visit ?? null,
+      })),
+      total,
+      page,
+      limit,
+      total_points: points._sum.points_balance ?? 0,
+    };
   }
 
   async findOne(id: number, viewer?: CustomerViewer) {
